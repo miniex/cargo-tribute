@@ -1,0 +1,13 @@
+[package]
+name = "cargo-tribute"
+version = "0.1.0"
+edition = "2024"
+description = "Generate a REUSE-style LICENSES/ folder and third-party attribution from a Cargo dependency tree."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/miniex/cargo-tribute"
+
+[dependencies]
+cargo_metadata = "0.23.1"
+serde = { version = "1.0.228", features = ["derive"] }
+spdx = "0.13.4"
+toml = "1.1.2"
