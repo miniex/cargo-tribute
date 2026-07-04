@@ -26,7 +26,7 @@ cargo binstall cargo-tribute
 ```
 cargo tribute                     # write LICENSES/ and THIRD-PARTY.md
 cargo tribute --check             # verify they are current and every license is accepted
-cargo tribute --manifest-path P   # run against a specific Cargo.toml
+cargo tribute --manifest-path P   # run against a specific Cargo.toml (writes at its workspace root)
 cargo tribute --help
 ```
 
