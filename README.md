@@ -15,6 +15,12 @@ It is a policy gate (fails if a dependency's license is not accepted) and, with 
 cargo install cargo-tribute
 ```
 
+Or, for a prebuilt binary via [cargo-binstall](https://github.com/cargo-bins/cargo-binstall):
+
+```
+cargo binstall cargo-tribute
+```
+
 ## Usage
 
 ```
