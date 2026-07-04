@@ -12,31 +12,31 @@ Text: [`LICENSES/Apache-2.0.txt`](LICENSES/Apache-2.0.txt)
 
 Text: [`LICENSES/MIT.txt`](LICENSES/MIT.txt)
 
-- [camino 1.2.4](https://github.com/camino-rs/camino)
-- [cargo-platform 0.3.3](https://github.com/rust-lang/cargo)
+- [camino 1.2.4](https://github.com/camino-rs/camino) — `MIT OR Apache-2.0`
+- [cargo-platform 0.3.3](https://github.com/rust-lang/cargo) — `MIT OR Apache-2.0`
 - [cargo_metadata 0.23.1](https://github.com/oli-obk/cargo_metadata)
-- [equivalent 1.0.2](https://github.com/indexmap-rs/equivalent)
-- [hashbrown 0.17.1](https://github.com/rust-lang/hashbrown)
-- [indexmap 2.14.0](https://github.com/indexmap-rs/indexmap)
-- [itoa 1.0.18](https://github.com/dtolnay/itoa)
-- [memchr 2.8.2](https://github.com/BurntSushi/memchr)
-- [proc-macro2 1.0.106](https://github.com/dtolnay/proc-macro2)
-- [quote 1.0.46](https://github.com/dtolnay/quote)
-- [semver 1.0.28](https://github.com/dtolnay/semver)
-- [serde 1.0.228](https://github.com/serde-rs/serde)
-- [serde_core 1.0.228](https://github.com/serde-rs/serde)
-- [serde_derive 1.0.228](https://github.com/serde-rs/serde)
-- [serde_json 1.0.150](https://github.com/serde-rs/json)
-- [serde_spanned 1.1.1](https://github.com/toml-rs/toml)
-- [smallvec 1.15.2](https://github.com/servo/rust-smallvec)
-- [syn 2.0.118](https://github.com/dtolnay/syn)
-- [thiserror 2.0.18](https://github.com/dtolnay/thiserror)
-- [thiserror-impl 2.0.18](https://github.com/dtolnay/thiserror)
-- [toml 1.1.2+spec-1.1.0](https://github.com/toml-rs/toml)
-- [toml_datetime 1.1.1+spec-1.1.0](https://github.com/toml-rs/toml)
-- [toml_parser 1.1.2+spec-1.1.0](https://github.com/toml-rs/toml)
-- [toml_writer 1.1.1+spec-1.1.0](https://github.com/toml-rs/toml)
-- [unicode-ident 1.0.24](https://github.com/dtolnay/unicode-ident)
+- [equivalent 1.0.2](https://github.com/indexmap-rs/equivalent) — `Apache-2.0 OR MIT`
+- [hashbrown 0.17.1](https://github.com/rust-lang/hashbrown) — `MIT OR Apache-2.0`
+- [indexmap 2.14.0](https://github.com/indexmap-rs/indexmap) — `Apache-2.0 OR MIT`
+- [itoa 1.0.18](https://github.com/dtolnay/itoa) — `MIT OR Apache-2.0`
+- [memchr 2.8.2](https://github.com/BurntSushi/memchr) — `Unlicense OR MIT`
+- [proc-macro2 1.0.106](https://github.com/dtolnay/proc-macro2) — `MIT OR Apache-2.0`
+- [quote 1.0.46](https://github.com/dtolnay/quote) — `MIT OR Apache-2.0`
+- [semver 1.0.28](https://github.com/dtolnay/semver) — `MIT OR Apache-2.0`
+- [serde 1.0.228](https://github.com/serde-rs/serde) — `MIT OR Apache-2.0`
+- [serde_core 1.0.228](https://github.com/serde-rs/serde) — `MIT OR Apache-2.0`
+- [serde_derive 1.0.228](https://github.com/serde-rs/serde) — `MIT OR Apache-2.0`
+- [serde_json 1.0.150](https://github.com/serde-rs/json) — `MIT OR Apache-2.0`
+- [serde_spanned 1.1.1](https://github.com/toml-rs/toml) — `MIT OR Apache-2.0`
+- [smallvec 1.15.2](https://github.com/servo/rust-smallvec) — `MIT OR Apache-2.0`
+- [syn 2.0.118](https://github.com/dtolnay/syn) — `MIT OR Apache-2.0`
+- [thiserror 2.0.18](https://github.com/dtolnay/thiserror) — `MIT OR Apache-2.0`
+- [thiserror-impl 2.0.18](https://github.com/dtolnay/thiserror) — `MIT OR Apache-2.0`
+- [toml 1.1.2+spec-1.1.0](https://github.com/toml-rs/toml) — `MIT OR Apache-2.0`
+- [toml_datetime 1.1.1+spec-1.1.0](https://github.com/toml-rs/toml) — `MIT OR Apache-2.0`
+- [toml_parser 1.1.2+spec-1.1.0](https://github.com/toml-rs/toml) — `MIT OR Apache-2.0`
+- [toml_writer 1.1.1+spec-1.1.0](https://github.com/toml-rs/toml) — `MIT OR Apache-2.0`
+- [unicode-ident 1.0.24](https://github.com/dtolnay/unicode-ident) — `(MIT OR Apache-2.0) AND Unicode-3.0`
 - [winnow 1.0.3](https://github.com/winnow-rs/winnow)
 - [zmij 1.0.21](https://github.com/dtolnay/zmij)
 
@@ -44,5 +44,5 @@ Text: [`LICENSES/MIT.txt`](LICENSES/MIT.txt)
 
 Text: [`LICENSES/Unicode-3.0.txt`](LICENSES/Unicode-3.0.txt)
 
-- [unicode-ident 1.0.24](https://github.com/dtolnay/unicode-ident)
+- [unicode-ident 1.0.24](https://github.com/dtolnay/unicode-ident) — `(MIT OR Apache-2.0) AND Unicode-3.0`
 

@@ -2,12 +2,13 @@
 //! text per license used) and a per-crate attribution manifest. `--check` verifies the
 //! output is current and every license is accepted, without writing anything.
 
+use cargo_metadata::camino::Utf8Path;
 use cargo_metadata::{DependencyKind, MetadataCommand, Package, PackageId};
 use serde::Deserialize;
 use spdx::expression::{ExprNode, Operator};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 // default allowed licenses; also the OR preference order (earlier wins when an
@@ -41,19 +42,27 @@ struct Config {
 
 struct Settings {
     accepted: Vec<String>,
-    manifest: String,
-    licenses_dir: String,
+    manifest: PathBuf,     // absolute output path
+    manifest_link: String, // relative name, for messages
+    licenses_dir: PathBuf, // absolute output dir
+    licenses_link: String, // relative name, for markdown links + messages
 }
 
-fn load_settings() -> Result<Settings, String> {
-    let cfg: Config = match fs::read_to_string("tribute.toml") {
+// anchor tribute.toml and outputs to the workspace root, not the cwd, so
+// --manifest-path against a crate elsewhere reads and writes beside that crate.
+fn load_settings(root: &Utf8Path) -> Result<Settings, String> {
+    let cfg: Config = match fs::read_to_string(root.join("tribute.toml")) {
         Ok(s) => toml::from_str(&s).map_err(|e| format!("tribute.toml: {e}"))?,
         Err(_) => Config::default(),
     };
+    let manifest_link = cfg.manifest.unwrap_or_else(|| "THIRD-PARTY.md".into());
+    let licenses_link = cfg.licenses_dir.unwrap_or_else(|| "LICENSES".into());
     Ok(Settings {
         accepted: cfg.accepted.unwrap_or_else(|| DEFAULT_ACCEPTED.iter().map(|s| s.to_string()).collect()),
-        manifest: cfg.manifest.unwrap_or_else(|| "THIRD-PARTY.md".into()),
-        licenses_dir: cfg.licenses_dir.unwrap_or_else(|| "LICENSES".into()),
+        manifest: root.join(&manifest_link).into(),
+        licenses_dir: root.join(&licenses_link).into(),
+        manifest_link,
+        licenses_link,
     })
 }
 
@@ -113,13 +122,12 @@ fn main() -> ExitCode {
 }
 
 fn run(check: bool, manifest_path: Option<String>) -> Result<String, String> {
-    let set = load_settings()?;
-
     let mut cmd = MetadataCommand::new();
     if let Some(p) = manifest_path {
         cmd.manifest_path(PathBuf::from(p));
     }
     let meta = cmd.exec().map_err(|e| e.to_string())?;
+    let set = load_settings(&meta.workspace_root)?;
     let resolve = meta.resolve.as_ref().ok_or("no dependency resolution (need a Cargo.toml)")?;
 
     let node_of: BTreeMap<&PackageId, _> = resolve.nodes.iter().map(|n| (&n.id, n)).collect();
@@ -185,19 +193,10 @@ fn run(check: bool, manifest_path: Option<String>) -> Result<String, String> {
             .ok_or_else(|| format!("no canonical text bundled for '{id}' (add assets/licenses/{id}.txt)"))?;
         texts.insert(id, text);
     }
-    let manifest = render_manifest(&by_license, &set.licenses_dir);
+    let manifest = render_manifest(&by_license, &set.licenses_link);
 
     if check {
-        let mut stale = Vec::new();
-        for (id, want) in &texts {
-            let path = format!("{}/{id}.txt", set.licenses_dir);
-            if fs::read_to_string(&path).ok().as_deref() != Some(want) {
-                stale.push(path);
-            }
-        }
-        if fs::read_to_string(&set.manifest).ok().as_deref() != Some(manifest.as_str()) {
-            stale.push(set.manifest.clone());
-        }
+        let stale = stale_outputs(&set.licenses_dir, &texts, &set.manifest, &manifest);
         if !stale.is_empty() {
             return Err(format!("out of date (run `cargo tribute`):\n  {}", stale.join("\n  ")));
         }
@@ -215,14 +214,14 @@ fn run(check: bool, manifest_path: Option<String>) -> Result<String, String> {
             }
         }
         for (id, text) in &texts {
-            fs::write(format!("{}/{id}.txt", set.licenses_dir), text).map_err(|e| e.to_string())?;
+            fs::write(set.licenses_dir.join(format!("{id}.txt")), text).map_err(|e| e.to_string())?;
         }
         fs::write(&set.manifest, &manifest).map_err(|e| e.to_string())?;
         Ok(format!(
             "wrote {}/ ({} licenses) and {} ({} crates)",
-            set.licenses_dir,
+            set.licenses_link,
             texts.len(),
-            set.manifest,
+            set.manifest_link,
             deps.len()
         ))
     }
@@ -280,6 +279,38 @@ fn best(set: &BTreeSet<String>, accepted: &[String]) -> usize {
     set.iter().map(|l| accepted.iter().position(|p| p == l).unwrap_or(usize::MAX)).min().unwrap_or(usize::MAX)
 }
 
+// paths a plain run would create, change, or delete; empty means --check passes.
+// includes orphaned <id>.txt files the write path removes, so --check cannot pass
+// while stale license files still sit in the tree.
+fn stale_outputs(
+    licenses_dir: &Path,
+    texts: &BTreeMap<&str, &'static str>,
+    manifest_path: &Path,
+    manifest: &str,
+) -> Vec<String> {
+    let mut stale = Vec::new();
+    for (id, want) in texts {
+        let path = licenses_dir.join(format!("{id}.txt"));
+        if fs::read_to_string(&path).ok().as_deref() != Some(*want) {
+            stale.push(path.display().to_string());
+        }
+    }
+    if let Ok(entries) = fs::read_dir(licenses_dir) {
+        for e in entries.flatten() {
+            let p = e.path();
+            let orphan = p.extension().is_some_and(|x| x == "txt")
+                && !p.file_stem().and_then(|s| s.to_str()).is_some_and(|s| texts.contains_key(s));
+            if orphan {
+                stale.push(p.display().to_string());
+            }
+        }
+    }
+    if fs::read_to_string(manifest_path).ok().as_deref() != Some(manifest) {
+        stale.push(manifest_path.display().to_string());
+    }
+    stale
+}
+
 fn render_manifest(by_license: &BTreeMap<String, Vec<&Package>>, licenses_dir: &str) -> String {
     let mut out = String::from(
         "# Third-party licenses\n\nDependencies linked into this crate, grouped by license; full texts are in \
@@ -296,7 +327,13 @@ fn render_manifest(by_license: &BTreeMap<String, Vec<&Package>>, licenses_dir: &
         out.push_str(&format!("## {id}\n\nText: [`{licenses_dir}/{id}.txt`]({licenses_dir}/{id}.txt)\n\n"));
         for p in ps {
             let url = p.repository.clone().unwrap_or_else(|| format!("https://crates.io/crates/{}", p.name));
-            out.push_str(&format!("- [{} {}]({url})\n", p.name, p.version));
+            // show the declared SPDX when it differs from the section license, so WITH
+            // exceptions and dual-license picks are not hidden by the grouping. only the
+            // base license text is emitted; an exception text would need adding to assets/.
+            match p.license.as_deref().filter(|e| *e != id.as_str()) {
+                Some(expr) => out.push_str(&format!("- [{} {}]({url}) — `{expr}`\n", p.name, p.version)),
+                None => out.push_str(&format!("- [{} {}]({url})\n", p.name, p.version)),
+            }
         }
         out.push('\n');
     }
@@ -335,5 +372,32 @@ mod tests {
     fn rejects_unaccepted() {
         assert_eq!(pick("GPL-3.0-only"), None);
         assert_eq!(pick("MIT AND GPL-3.0-only"), None);
+    }
+
+    #[test]
+    fn stale_detects_missing_and_orphan() {
+        let dir = std::env::temp_dir().join(format!("tribute-test-{}", std::process::id()));
+        let lic = dir.join("LICENSES");
+        fs::create_dir_all(&lic).unwrap();
+        let manifest_path = dir.join("THIRD-PARTY.md");
+        let mut texts: BTreeMap<&str, &'static str> = BTreeMap::new();
+        texts.insert("MIT", "MIT TEXT");
+
+        // nothing on disk yet: wanted license and manifest both report stale.
+        let stale = stale_outputs(&lic, &texts, &manifest_path, "MANIFEST");
+        assert!(stale.iter().any(|s| s.contains("MIT.txt")));
+        assert!(stale.iter().any(|s| s.contains("THIRD-PARTY.md")));
+
+        // write exactly what is wanted: nothing stale.
+        fs::write(lic.join("MIT.txt"), "MIT TEXT").unwrap();
+        fs::write(&manifest_path, "MANIFEST").unwrap();
+        assert!(stale_outputs(&lic, &texts, &manifest_path, "MANIFEST").is_empty());
+
+        // a leftover license file not in the wanted set is stale too.
+        fs::write(lic.join("GPL-3.0.txt"), "x").unwrap();
+        let stale = stale_outputs(&lic, &texts, &manifest_path, "MANIFEST");
+        assert!(stale.iter().any(|s| s.contains("GPL-3.0.txt")));
+
+        fs::remove_dir_all(&dir).ok();
     }
 }
