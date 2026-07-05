@@ -2,6 +2,13 @@
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Dates are KST (UTC+9).
 
+## [Unreleased]
+
+### Added
+
+- `[[clarify]]` in `tribute.toml` overrides a crate's license by name (and optional exact version), so crates that declare `license-file` instead of `license`, or carry a wrong or non-SPDX `license`, no longer hard-fail. The clarified expression flows through the accepted-set policy and is shown in `THIRD-PARTY.md`.
+- CI workflow running `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`, and `cargo tribute --check` on pushes and pull requests.
+
 ## [0.2.0] - 2026-07-04
 
 ### Added

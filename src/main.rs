@@ -38,10 +38,22 @@ struct Config {
     manifest: Option<String>,
     #[serde(rename = "licenses-dir")]
     licenses_dir: Option<String>,
+    clarify: Option<Vec<Clarify>>,
+}
+
+// override a crate's license when its `license` field is missing (crates that use
+// `license-file` instead), wrong, or non-SPDX. `version` optional: omit to match any.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Clarify {
+    name: String,
+    version: Option<String>,
+    expression: String,
 }
 
 struct Settings {
     accepted: Vec<String>,
+    clarify: Vec<Clarify>,
     manifest: PathBuf,     // absolute output path
     manifest_link: String, // relative name, for messages
     licenses_dir: PathBuf, // absolute output dir
@@ -59,6 +71,7 @@ fn load_settings(root: &Utf8Path) -> Result<Settings, String> {
     let licenses_link = cfg.licenses_dir.unwrap_or_else(|| "LICENSES".into());
     Ok(Settings {
         accepted: cfg.accepted.unwrap_or_else(|| DEFAULT_ACCEPTED.iter().map(|s| s.to_string()).collect()),
+        clarify: cfg.clarify.unwrap_or_default(),
         manifest: root.join(&manifest_link).into(),
         licenses_dir: root.join(&licenses_link).into(),
         manifest_link,
@@ -82,6 +95,11 @@ CONFIG (tribute.toml in the project root, all optional):
     accepted = [\"MIT\", \"Apache-2.0\", ...]   # allowed licenses; also the OR preference order
     manifest = \"THIRD-PARTY.md\"              # attribution manifest path
     licenses-dir = \"LICENSES\"                # folder for the canonical license texts
+
+    [[clarify]]                              # override a crate's license (missing/wrong/non-SPDX)
+    name = \"ring\"
+    version = \"0.17.8\"                       # optional; omit to match any version
+    expression = \"MIT AND ISC AND OpenSSL\"
 ";
 
 fn main() -> ExitCode {
@@ -155,15 +173,20 @@ fn run(check: bool, manifest_path: Option<String>) -> Result<String, String> {
     }
 
     // choose a license per dependency; collect crates grouped by license.
+    // effective: expression actually used per crate (clarified or declared), so the
+    // manifest reports that, not the crate's possibly-wrong license field.
     let mut by_license: BTreeMap<String, Vec<&Package>> = BTreeMap::new();
+    let mut effective: BTreeMap<&PackageId, &str> = BTreeMap::new();
     let mut failures = Vec::new();
     for id in &deps {
         let pkg = pkg_of[id];
         let name = format!("{} {}", pkg.name, pkg.version);
-        let Some(expr_str) = pkg.license.as_deref() else {
-            failures.push(format!("{name}: no license field"));
+        let clarified = clarify_expr(&set.clarify, pkg.name.as_ref(), &pkg.version.to_string());
+        let Some(expr_str) = clarified.or(pkg.license.as_deref()) else {
+            failures.push(format!("{name}: no license field (add a [[clarify]] entry to tribute.toml)"));
             continue;
         };
+        effective.insert(*id, expr_str);
         // LAX accepts the legacy `/` OR-separator and lower-case operators still
         // found in older crates (e.g. "MIT/Apache-2.0", "Unlicense/MIT").
         let expr = match spdx::Expression::parse_mode(expr_str, spdx::ParseMode::LAX) {
@@ -193,7 +216,7 @@ fn run(check: bool, manifest_path: Option<String>) -> Result<String, String> {
             .ok_or_else(|| format!("no canonical text bundled for '{id}' (add assets/licenses/{id}.txt)"))?;
         texts.insert(id, text);
     }
-    let manifest = render_manifest(&by_license, &set.licenses_link);
+    let manifest = render_manifest(&by_license, &effective, &set.licenses_link);
 
     if check {
         let stale = stale_outputs(&set.licenses_dir, &texts, &set.manifest, &manifest);
@@ -225,6 +248,15 @@ fn run(check: bool, manifest_path: Option<String>) -> Result<String, String> {
             deps.len()
         ))
     }
+}
+
+// a tribute.toml [[clarify]] expression overriding this crate's declared license,
+// matched by name and (if given) exact version.
+fn clarify_expr<'a>(clarify: &'a [Clarify], name: &str, version: &str) -> Option<&'a str> {
+    clarify
+        .iter()
+        .find(|c| c.name == name && c.version.as_deref().is_none_or(|v| v == version))
+        .map(|c| c.expression.as_str())
 }
 
 // walk the SPDX expression (postfix) to the licenses we attribute, or None if the
@@ -311,7 +343,11 @@ fn stale_outputs(
     stale
 }
 
-fn render_manifest(by_license: &BTreeMap<String, Vec<&Package>>, licenses_dir: &str) -> String {
+fn render_manifest(
+    by_license: &BTreeMap<String, Vec<&Package>>,
+    effective: &BTreeMap<&PackageId, &str>,
+    licenses_dir: &str,
+) -> String {
     let mut out = String::from(
         "# Third-party licenses\n\nDependencies linked into this crate, grouped by license; full texts are in \
          [`",
@@ -327,10 +363,11 @@ fn render_manifest(by_license: &BTreeMap<String, Vec<&Package>>, licenses_dir: &
         out.push_str(&format!("## {id}\n\nText: [`{licenses_dir}/{id}.txt`]({licenses_dir}/{id}.txt)\n\n"));
         for p in ps {
             let url = p.repository.clone().unwrap_or_else(|| format!("https://crates.io/crates/{}", p.name));
-            // show the declared SPDX when it differs from the section license, so WITH
-            // exceptions and dual-license picks are not hidden by the grouping. only the
-            // base license text is emitted; an exception text would need adding to assets/.
-            match p.license.as_deref().filter(|e| *e != id.as_str()) {
+            // show the effective SPDX (clarified or declared) when it differs from the
+            // section license, so WITH exceptions and dual-license picks are not hidden by
+            // the grouping. only the base license text is emitted; an exception text would
+            // need adding to assets/.
+            match effective.get(&p.id).copied().filter(|e| *e != id.as_str()) {
                 Some(expr) => out.push_str(&format!("- [{} {}]({url}) — `{expr}`\n", p.name, p.version)),
                 None => out.push_str(&format!("- [{} {}]({url})\n", p.name, p.version)),
             }
@@ -372,6 +409,18 @@ mod tests {
     fn rejects_unaccepted() {
         assert_eq!(pick("GPL-3.0-only"), None);
         assert_eq!(pick("MIT AND GPL-3.0-only"), None);
+    }
+
+    #[test]
+    fn clarify_matches_name_and_version() {
+        let c = vec![
+            Clarify { name: "ring".into(), version: None, expression: "MIT AND ISC".into() },
+            Clarify { name: "foo".into(), version: Some("1.0.0".into()), expression: "BSD-3-Clause".into() },
+        ];
+        assert_eq!(clarify_expr(&c, "ring", "0.17.8"), Some("MIT AND ISC")); // omitted version matches any
+        assert_eq!(clarify_expr(&c, "foo", "1.0.0"), Some("BSD-3-Clause")); // exact version
+        assert_eq!(clarify_expr(&c, "foo", "2.0.0"), None); // version mismatch
+        assert_eq!(clarify_expr(&c, "bar", "1.0.0"), None); // name mismatch
     }
 
     #[test]
