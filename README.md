@@ -30,6 +30,7 @@ cargo binstall cargo-tribute
 cargo tribute                     # write LICENSES/ and THIRD-PARTY.md
 cargo tribute --check             # verify they are current and every license is accepted
 cargo tribute --manifest-path P   # run against a specific Cargo.toml (writes at its workspace root)
+cargo tribute --locked --check    # forward --locked/--offline/--frozen to cargo metadata (for CI)
 cargo tribute --help
 ```
 
@@ -46,7 +47,7 @@ licenses-dir = "LICENSES"     # folder for the canonical license texts
 # `license`, or whose `license` field is wrong or non-SPDX. Repeatable.
 [[clarify]]
 name = "ring"
-version = "0.17.8"            # optional; omit to match any version
+version = "0.17.8"            # optional semver req (like Cargo); omit to match any version
 expression = "MIT AND ISC AND OpenSSL"
 ```
 

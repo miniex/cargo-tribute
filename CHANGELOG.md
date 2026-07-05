@@ -2,6 +2,22 @@
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Dates are KST (UTC+9).
 
+## [Unreleased]
+
+### Added
+
+- Forward `--locked`, `--offline`, and `--frozen` to `cargo metadata`, so `--check` in CI can resolve the dependency tree deterministically and without network access.
+
+### Changed
+
+- A `[[clarify]]` `version` is now a semver requirement, matching Cargo, so `version = "1.0"` covers `1.0.0`; write `=1.0.0` for an exact match.
+- A failed file write names the path it was writing, and `--manifest-path` with no value is rejected instead of silently ignored.
+
+### Fixed
+
+- Only remove `LICENSES/*.txt` files cargo-tribute wrote itself; a hand-added license text is now left in place instead of deleted.
+- Reject an absolute or `..` `manifest`/`licenses-dir`, which would otherwise write and delete files outside the project.
+
 ## [0.3.1] - 2026-07-05
 
 ### Changed

@@ -3,6 +3,7 @@
 //! output is current and every license is accepted, without writing anything.
 
 use cargo_metadata::camino::Utf8Path;
+use cargo_metadata::semver::{Version, VersionReq};
 use cargo_metadata::{DependencyKind, MetadataCommand, Package, PackageId};
 use serde::Deserialize;
 use spdx::expression::{ExprNode, Operator};
@@ -69,6 +70,10 @@ fn load_settings(root: &Utf8Path) -> Result<Settings, String> {
     };
     let manifest_link = cfg.manifest.unwrap_or_else(|| "THIRD-PARTY.md".into());
     let licenses_link = cfg.licenses_dir.unwrap_or_else(|| "LICENSES".into());
+    // keep outputs inside the project: an absolute or `..` path would let the write and the
+    // orphan-cleanup (which deletes `.txt`) touch files outside the tree.
+    relative_inside("manifest", &manifest_link)?;
+    relative_inside("licenses-dir", &licenses_link)?;
     Ok(Settings {
         accepted: cfg.accepted.unwrap_or_else(|| DEFAULT_ACCEPTED.iter().map(|s| s.to_string()).collect()),
         clarify: cfg.clarify.unwrap_or_default(),
@@ -77,6 +82,30 @@ fn load_settings(root: &Utf8Path) -> Result<Settings, String> {
         manifest_link,
         licenses_link,
     })
+}
+
+// reject a config output path that is absolute or escapes the project via `..`.
+fn relative_inside(field: &str, link: &str) -> Result<(), String> {
+    let p = Path::new(link);
+    if p.is_absolute() || p.components().any(|c| c == std::path::Component::ParentDir) {
+        return Err(format!("tribute.toml: {field} must be a relative path inside the project (got '{link}')"));
+    }
+    Ok(())
+}
+
+// wrap an io result with the path, so a failure names the file instead of a bare errno.
+fn io<T>(path: &Path, r: std::io::Result<T>) -> Result<T, String> {
+    r.map_err(|e| format!("{}: {e}", path.display()))
+}
+
+// a LICENSES/<id>.txt we ourselves write (a bundled license id) that is no longer used.
+// a hand-added .txt with any other name is not ours to delete or flag.
+fn is_stale_license(path: &Path, texts: &BTreeMap<&str, &'static str>) -> bool {
+    path.extension().is_some_and(|x| x == "txt")
+        && path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .is_some_and(|s| canonical_text(s).is_some() && !texts.contains_key(s))
 }
 
 const HELP: &str = "\
@@ -88,6 +117,7 @@ USAGE:
 OPTIONS:
         --check              verify the output is current; do not write (exit 1 if stale)
         --manifest-path <P>  path to Cargo.toml (default: auto-detect from the cwd)
+        --locked             forwarded to `cargo metadata` (also --offline, --frozen)
     -h, --help               print this help
     -V, --version            print version
 
@@ -98,13 +128,16 @@ CONFIG (tribute.toml in the project root, all optional):
 
     [[clarify]]                              # override a crate's license (missing/wrong/non-SPDX)
     name = \"ring\"
-    version = \"0.17.8\"                       # optional; omit to match any version
+    version = \"0.17.8\"                       # optional semver req; omit to match any version
     expression = \"MIT AND ISC AND OpenSSL\"
 ";
 
 fn main() -> ExitCode {
     let mut check = false;
     let mut manifest_path = None;
+    // flags forwarded verbatim to `cargo metadata`, e.g. --locked/--offline/--frozen
+    // so a CI --check resolves deterministically and offline.
+    let mut cargo_flags: Vec<String> = Vec::new();
     let mut args = std::env::args().skip(1).peekable();
     if args.peek().map(String::as_str) == Some("tribute") {
         args.next(); // cargo passes the subcommand name when invoked as `cargo tribute`
@@ -112,7 +145,14 @@ fn main() -> ExitCode {
     while let Some(a) = args.next() {
         match a.as_str() {
             "--check" => check = true,
-            "--manifest-path" => manifest_path = args.next(),
+            "--manifest-path" => match args.next() {
+                Some(p) => manifest_path = Some(p),
+                None => {
+                    eprintln!("cargo-tribute: --manifest-path needs a value");
+                    return ExitCode::FAILURE;
+                }
+            },
+            "--locked" | "--offline" | "--frozen" => cargo_flags.push(a),
             "-h" | "--help" => {
                 print!("{HELP}");
                 return ExitCode::SUCCESS;
@@ -127,7 +167,7 @@ fn main() -> ExitCode {
             }
         }
     }
-    match run(check, manifest_path) {
+    match run(check, manifest_path, cargo_flags) {
         Ok(msg) => {
             println!("{msg}");
             ExitCode::SUCCESS
@@ -139,10 +179,13 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(check: bool, manifest_path: Option<String>) -> Result<String, String> {
+fn run(check: bool, manifest_path: Option<String>, cargo_flags: Vec<String>) -> Result<String, String> {
     let mut cmd = MetadataCommand::new();
     if let Some(p) = manifest_path {
         cmd.manifest_path(PathBuf::from(p));
+    }
+    if !cargo_flags.is_empty() {
+        cmd.other_options(cargo_flags);
     }
     let meta = cmd.exec().map_err(|e| e.to_string())?;
     let set = load_settings(&meta.workspace_root)?;
@@ -181,7 +224,7 @@ fn run(check: bool, manifest_path: Option<String>) -> Result<String, String> {
     for id in &deps {
         let pkg = pkg_of[id];
         let name = format!("{} {}", pkg.name, pkg.version);
-        let clarified = clarify_expr(&set.clarify, pkg.name.as_ref(), &pkg.version.to_string());
+        let clarified = clarify_expr(&set.clarify, pkg.name.as_ref(), &pkg.version);
         let Some(expr_str) = clarified.or(pkg.license.as_deref()) else {
             failures.push(format!("{name}: no license field (add a [[clarify]] entry to tribute.toml)"));
             continue;
@@ -210,7 +253,7 @@ fn run(check: bool, manifest_path: Option<String>) -> Result<String, String> {
     for c in &set.clarify {
         let matched = deps.iter().any(|id| {
             let p = pkg_of[id];
-            clarify_matches(c, p.name.as_ref(), &p.version.to_string())
+            clarify_matches(c, p.name.as_ref(), &p.version)
         });
         if !matched {
             let ver = c.version.as_deref().map(|v| format!(" {v}")).unwrap_or_default();
@@ -238,25 +281,25 @@ fn run(check: bool, manifest_path: Option<String>) -> Result<String, String> {
         }
         Ok(format!("up to date: {} licenses, {} crates", texts.len(), deps.len()))
     } else {
-        fs::create_dir_all(&set.licenses_dir).map_err(|e| e.to_string())?;
-        // drop stale license files no longer used
+        io(&set.licenses_dir, fs::create_dir_all(&set.licenses_dir))?;
+        // drop bundled-license texts we wrote that are no longer used; leave other files
         if let Ok(entries) = fs::read_dir(&set.licenses_dir) {
             for e in entries.flatten() {
                 let p = e.path();
-                let keep = p.file_stem().and_then(|s| s.to_str()).is_some_and(|s| texts.contains_key(s));
-                if p.extension().is_some_and(|x| x == "txt") && !keep {
+                if is_stale_license(&p, &texts) {
                     let _ = fs::remove_file(p);
                 }
             }
         }
         for (id, text) in &texts {
-            fs::write(set.licenses_dir.join(format!("{id}.txt")), text).map_err(|e| e.to_string())?;
+            let p = set.licenses_dir.join(format!("{id}.txt"));
+            io(&p, fs::write(&p, text))?;
         }
         // manifest path is configurable and may sit in a subdir; create it like licenses_dir
         if let Some(parent) = set.manifest.parent() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            io(parent, fs::create_dir_all(parent))?;
         }
-        fs::write(&set.manifest, &manifest).map_err(|e| e.to_string())?;
+        io(&set.manifest, fs::write(&set.manifest, &manifest))?;
         Ok(format!(
             "wrote {}/ ({} licenses) and {} ({} crates)",
             set.licenses_link,
@@ -267,13 +310,14 @@ fn run(check: bool, manifest_path: Option<String>) -> Result<String, String> {
     }
 }
 
-// a clarify entry applies to this crate: name equal, and version equal if the entry pins one.
-fn clarify_matches(c: &Clarify, name: &str, version: &str) -> bool {
-    c.name == name && c.version.as_deref().is_none_or(|v| v == version)
+// a clarify entry applies to this crate: name equal, and if the entry gives a version it
+// parses as a semver requirement the crate satisfies (so "1.0" matches 1.0.0, like Cargo).
+fn clarify_matches(c: &Clarify, name: &str, version: &Version) -> bool {
+    c.name == name && c.version.as_deref().is_none_or(|v| VersionReq::parse(v).is_ok_and(|req| req.matches(version)))
 }
 
 // a tribute.toml [[clarify]] expression overriding this crate's declared license.
-fn clarify_expr<'a>(clarify: &'a [Clarify], name: &str, version: &str) -> Option<&'a str> {
+fn clarify_expr<'a>(clarify: &'a [Clarify], name: &str, version: &Version) -> Option<&'a str> {
     clarify.iter().find(|c| clarify_matches(c, name, version)).map(|c| c.expression.as_str())
 }
 
@@ -348,9 +392,7 @@ fn stale_outputs(
     if let Ok(entries) = fs::read_dir(licenses_dir) {
         for e in entries.flatten() {
             let p = e.path();
-            let orphan = p.extension().is_some_and(|x| x == "txt")
-                && !p.file_stem().and_then(|s| s.to_str()).is_some_and(|s| texts.contains_key(s));
-            if orphan {
+            if is_stale_license(&p, texts) {
                 stale.push(p.display().to_string());
             }
         }
@@ -431,14 +473,16 @@ mod tests {
 
     #[test]
     fn clarify_matches_name_and_version() {
+        let v = |s: &str| -> Version { s.parse().unwrap() };
         let c = vec![
             Clarify { name: "ring".into(), version: None, expression: "MIT AND ISC".into() },
-            Clarify { name: "foo".into(), version: Some("1.0.0".into()), expression: "BSD-3-Clause".into() },
+            Clarify { name: "foo".into(), version: Some("1.0".into()), expression: "BSD-3-Clause".into() },
         ];
-        assert_eq!(clarify_expr(&c, "ring", "0.17.8"), Some("MIT AND ISC")); // omitted version matches any
-        assert_eq!(clarify_expr(&c, "foo", "1.0.0"), Some("BSD-3-Clause")); // exact version
-        assert_eq!(clarify_expr(&c, "foo", "2.0.0"), None); // version mismatch
-        assert_eq!(clarify_expr(&c, "bar", "1.0.0"), None); // name mismatch
+        assert_eq!(clarify_expr(&c, "ring", &v("0.17.8")), Some("MIT AND ISC")); // omitted version matches any
+        assert_eq!(clarify_expr(&c, "foo", &v("1.0.0")), Some("BSD-3-Clause")); // req "1.0" matches 1.0.0
+        assert_eq!(clarify_expr(&c, "foo", &v("1.4.0")), Some("BSD-3-Clause")); // and 1.4.0 (caret req)
+        assert_eq!(clarify_expr(&c, "foo", &v("2.0.0")), None); // out of req range
+        assert_eq!(clarify_expr(&c, "bar", &v("1.0.0")), None); // name mismatch
     }
 
     #[test]
@@ -460,10 +504,15 @@ mod tests {
         fs::write(&manifest_path, "MANIFEST").unwrap();
         assert!(stale_outputs(&lic, &texts, &manifest_path, "MANIFEST").is_empty());
 
-        // a leftover license file not in the wanted set is stale too.
-        fs::write(lic.join("GPL-3.0.txt"), "x").unwrap();
+        // a leftover bundled-license text not in the wanted set is stale (we wrote it).
+        fs::write(lic.join("Apache-2.0.txt"), "x").unwrap();
         let stale = stale_outputs(&lic, &texts, &manifest_path, "MANIFEST");
-        assert!(stale.iter().any(|s| s.contains("GPL-3.0.txt")));
+        assert!(stale.iter().any(|s| s.contains("Apache-2.0.txt")));
+
+        // a hand-added file whose stem is not a bundled license id is left alone.
+        fs::write(lic.join("OpenSSL.txt"), "x").unwrap();
+        let stale = stale_outputs(&lic, &texts, &manifest_path, "MANIFEST");
+        assert!(!stale.iter().any(|s| s.contains("OpenSSL.txt")));
 
         fs::remove_dir_all(&dir).ok();
     }
