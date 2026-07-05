@@ -12,7 +12,7 @@ Generate a REUSE-style `LICENSES/` folder and a per-crate attribution manifest f
 
 It is a policy gate (fails if a dependency's license is not accepted) and, with `--check`, a staleness gate (fails if the committed output no longer matches the dependency tree) -- both suitable for CI.
 
-<!-- demo: drop a recording here, e.g. ![demo](assets/demo.gif) -->
+![cargo tribute writing the attribution files, then --check catching a stale one](assets/preview.gif)
 
 ## Install
 
