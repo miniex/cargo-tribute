@@ -22,13 +22,19 @@ jobs:
           - { target: aarch64-unknown-linux-musl, os: ubuntu-latest }
           - { target: arm-unknown-linux-musleabihf, os: ubuntu-latest }
           - { target: aarch64-apple-darwin, os: macos-latest }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest }
+          - { target: i686-pc-windows-msvc, os: windows-latest }
     steps:
       - uses: actions/checkout@v4
       # installs the target, cross-compiles with cross when needed, strips,
-      # tars as {bin}-{target}.tar.gz, and uploads to the tag's release
+      # tars as {bin}-{target}.tar.gz, and uploads to the tag's release.
+      # tar: all / zip: none forces tar.gz on windows too, so every asset matches
+      # the binstall pkg-fmt = "tgz" in Cargo.toml.
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin: cargo-tribute
           target: ${{ matrix.target }}
           archive: $bin-$target
+          tar: all
+          zip: none
           token: ${{ secrets.GITHUB_TOKEN }}
