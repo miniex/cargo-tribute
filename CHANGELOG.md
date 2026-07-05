@@ -2,6 +2,19 @@
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Dates are KST (UTC+9).
 
+## [Unreleased]
+
+### Added
+
+- License and exception texts now come from the `spdx` crate, so every SPDX license and `WITH` exception is covered with nothing to hand-maintain. When a crate is attributed under `A WITH exception`, the exception body is written too (e.g. `LICENSES/LLVM-exception.txt`).
+- `--json` prints the resolved attribution -- the licenses and exceptions used, and each crate's effective expression -- as JSON, without writing any files.
+- A warning when an `accepted` entry is not a known SPDX id, so a typo like `Apache2.0` that would silently reject a license is caught.
+
+### Changed
+
+- `LICENSES/<id>.txt` bodies are now the SPDX-official texts, which can differ from the previously hand-copied ones; re-run `cargo tribute` to update them.
+- The published crate no longer ships the README preview gif.
+
 ## [0.5.1] - 2026-07-05
 
 ### Fixed

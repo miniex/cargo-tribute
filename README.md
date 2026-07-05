@@ -35,6 +35,7 @@ cargo tribute --manifest-path P   # run against a specific Cargo.toml (writes at
 cargo tribute --locked --check    # forward --locked/--offline/--frozen to cargo metadata (for CI)
 cargo tribute --all-features      # forward --features/--all-features/--filter-platform too, to
                                   # attribute optional (feature-gated) or platform-specific deps
+cargo tribute --json              # print the resolved attribution as JSON (no files written)
 cargo tribute --help
 ```
 
@@ -89,7 +90,7 @@ expression = "MIT AND ISC AND OpenSSL"
 
 Each crate's SPDX expression is evaluated against `accepted` (which is also the OR preference order): for `A OR B` it picks the preferred accepted license, for `A AND B` it keeps both. Legacy `/`-separated expressions (`MIT/Apache-2.0`) are accepted. A crate whose expression cannot be satisfied from the accepted set is a hard error.
 
-Only normal (runtime) dependencies are attributed -- dev- and build-dependencies are skipped. By default `cargo metadata` resolves the default feature set, so optional (feature-gated) dependencies are not attributed unless you enable them with `--features`/`--all-features`. Canonical license texts are bundled under `assets/licenses/`; the common permissive set ships, and using a license without a bundled text errors with the file to add.
+Only normal (runtime) dependencies are attributed -- dev- and build-dependencies are skipped. By default `cargo metadata` resolves the default feature set, so optional (feature-gated) dependencies are not attributed unless you enable them with `--features`/`--all-features`. Canonical license texts (and `WITH` exception texts) come from the [`spdx`](https://crates.io/crates/spdx) crate, so every SPDX license and exception is covered with no texts to hand-maintain.
 
 A crate with no `license` field (it declares `license-file` instead), or a wrong or non-SPDX one, is a hard error until you give it an SPDX expression with a `[[clarify]]` entry; the clarified expression then flows through the same accepted-set policy.
 

@@ -27,6 +27,7 @@ version = "0.5.1"
 dependencies = [
  "cargo_metadata",
  "serde",
+ "serde_json",
  "spdx",
  "toml",
 ]

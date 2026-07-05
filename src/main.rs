@@ -5,7 +5,7 @@
 use cargo_metadata::camino::Utf8Path;
 use cargo_metadata::semver::{Version, VersionReq};
 use cargo_metadata::{DependencyKind, MetadataCommand, Package, PackageId};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use spdx::expression::{ExprNode, Operator};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -17,19 +17,10 @@ use std::process::ExitCode;
 const DEFAULT_ACCEPTED: &[&str] =
     &["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "0BSD", "Zlib", "Unlicense", "Unicode-3.0"];
 
+// canonical text for a license or exception id, from the spdx crate's bundled corpus
+// (the `text` feature). covers every SPDX id, so no texts are hand-maintained here.
 fn canonical_text(id: &str) -> Option<&'static str> {
-    Some(match id {
-        "MIT" => include_str!("../assets/licenses/MIT.txt"),
-        "Apache-2.0" => include_str!("../assets/licenses/Apache-2.0.txt"),
-        "BSD-2-Clause" => include_str!("../assets/licenses/BSD-2-Clause.txt"),
-        "BSD-3-Clause" => include_str!("../assets/licenses/BSD-3-Clause.txt"),
-        "ISC" => include_str!("../assets/licenses/ISC.txt"),
-        "0BSD" => include_str!("../assets/licenses/0BSD.txt"),
-        "Zlib" => include_str!("../assets/licenses/Zlib.txt"),
-        "Unlicense" => include_str!("../assets/licenses/Unlicense.txt"),
-        "Unicode-3.0" => include_str!("../assets/licenses/Unicode-3.0.txt"),
-        _ => return None,
-    })
+    spdx::license_id(id).map(|l| l.text()).or_else(|| spdx::exception_id(id).map(|e| e.text()))
 }
 
 #[derive(Deserialize, Default)]
@@ -107,8 +98,8 @@ fn io<T>(path: &Path, r: std::io::Result<T>) -> Result<T, String> {
     r.map_err(|e| format!("{}: {e}", path.display()))
 }
 
-// a LICENSES/<id>.txt we ourselves write (a bundled license id) that is no longer used.
-// a hand-added .txt with any other name is not ours to delete or flag.
+// a LICENSES/<id>.txt cargo-tribute could write (stem is an SPDX license or exception id)
+// that is no longer used. a .txt whose stem is not an SPDX id is hand-added and left alone.
 fn is_stale_license(path: &Path, texts: &BTreeMap<&str, &'static str>) -> bool {
     path.extension().is_some_and(|x| x == "txt")
         && path
@@ -130,6 +121,7 @@ OPTIONS:
         --features <F>       forwarded to `cargo metadata`, to attribute feature-gated
                              deps (also --all-features, --no-default-features,
                              --filter-platform <T>)
+        --json               print the resolved attribution as JSON instead of a summary
     -h, --help               print this help
     -V, --version            print version
 
@@ -146,6 +138,7 @@ CONFIG (tribute.toml in the project root, all optional):
 
 fn main() -> ExitCode {
     let mut check = false;
+    let mut json = false;
     let mut manifest_path = None;
     // flags forwarded verbatim to `cargo metadata`, e.g. --locked/--offline/--frozen
     // so a CI --check resolves deterministically and offline.
@@ -157,6 +150,7 @@ fn main() -> ExitCode {
     while let Some(a) = args.next() {
         match a.as_str() {
             "--check" => check = true,
+            "--json" => json = true,
             "--manifest-path" => match args.next() {
                 Some(p) => manifest_path = Some(p),
                 None => {
@@ -189,7 +183,7 @@ fn main() -> ExitCode {
             }
         }
     }
-    match run(check, manifest_path, cargo_flags) {
+    match run(check, json, manifest_path, cargo_flags) {
         Ok(msg) => {
             println!("{msg}");
             ExitCode::SUCCESS
@@ -201,7 +195,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(check: bool, manifest_path: Option<String>, cargo_flags: Vec<String>) -> Result<String, String> {
+fn run(check: bool, json: bool, manifest_path: Option<String>, cargo_flags: Vec<String>) -> Result<String, String> {
     let mut cmd = MetadataCommand::new();
     if let Some(p) = manifest_path {
         cmd.manifest_path(PathBuf::from(p));
@@ -211,6 +205,12 @@ fn run(check: bool, manifest_path: Option<String>, cargo_flags: Vec<String>) -> 
     }
     let meta = cmd.exec().map_err(|e| e.to_string())?;
     let set = load_settings(&meta.workspace_root)?;
+    // a typo in `accepted` (e.g. "Apache2.0") would silently reject that license; flag it.
+    for a in &set.accepted {
+        if spdx::license_id(a).is_none() {
+            eprintln!("cargo-tribute: warning: accepted license '{a}' is not a known SPDX id");
+        }
+    }
     let resolve = meta.resolve.as_ref().ok_or("no dependency resolution (need a Cargo.toml)")?;
 
     let node_of: BTreeMap<&PackageId, _> = resolve.nodes.iter().map(|n| (&n.id, n)).collect();
@@ -242,6 +242,8 @@ fn run(check: bool, manifest_path: Option<String>, cargo_flags: Vec<String>) -> 
     // manifest reports that, not the crate's possibly-wrong license field.
     let mut by_license: BTreeMap<String, Vec<&Package>> = BTreeMap::new();
     let mut effective: BTreeMap<&PackageId, &str> = BTreeMap::new();
+    let mut chosen_of: BTreeMap<&PackageId, BTreeSet<String>> = BTreeMap::new();
+    let mut used_exceptions: BTreeSet<String> = BTreeSet::new();
     let mut failures = Vec::new();
     for id in &deps {
         // every resolve-graph id is also in meta.packages; guard the lookup so a
@@ -268,9 +270,14 @@ fn run(check: bool, manifest_path: Option<String>, cargo_flags: Vec<String>) -> 
         };
         match choose(&expr, &set.accepted) {
             Some(chosen) => {
-                for lic in chosen {
-                    by_license.entry(lic).or_default().push(pkg);
+                // a WITH exception on a chosen license contributes its own text file.
+                for ex in exceptions_for(&expr, &chosen) {
+                    used_exceptions.insert(ex);
                 }
+                for lic in &chosen {
+                    by_license.entry(lic.clone()).or_default().push(pkg);
+                }
+                chosen_of.insert(*id, chosen);
             }
             None => failures.push(format!("{name}: license '{expr_str}' not in the accepted set")),
         }
@@ -290,12 +297,15 @@ fn run(check: bool, manifest_path: Option<String>, cargo_flags: Vec<String>) -> 
         return Err(format!("license policy failed:\n  {}", failures.join("\n  ")));
     }
 
-    // resolve each used license to its canonical text.
+    // resolve each used license and exception id to its canonical text.
     let mut texts: BTreeMap<&str, &'static str> = BTreeMap::new();
-    for id in by_license.keys() {
-        let text = canonical_text(id)
-            .ok_or_else(|| format!("no canonical text bundled for '{id}' (add assets/licenses/{id}.txt)"))?;
+    for id in by_license.keys().map(String::as_str).chain(used_exceptions.iter().map(String::as_str)) {
+        let text = canonical_text(id).ok_or_else(|| format!("no canonical text for SPDX id '{id}'"))?;
         texts.insert(id, text);
+    }
+    // --json is a read-only report of what the tree resolves to; it never writes or checks.
+    if json {
+        return render_json(&deps, &pkg_of, &effective, &chosen_of, &by_license, &used_exceptions);
     }
     let manifest = render_manifest(&by_license, &effective, &set.licenses_link);
 
@@ -304,10 +314,10 @@ fn run(check: bool, manifest_path: Option<String>, cargo_flags: Vec<String>) -> 
         if !stale.is_empty() {
             return Err(format!("out of date (run `cargo tribute`):\n  {}", stale.join("\n  ")));
         }
-        Ok(format!("up to date: {} licenses, {} crates", texts.len(), deps.len()))
+        Ok(format!("up to date: {} license texts, {} crates", texts.len(), deps.len()))
     } else {
         io(&set.licenses_dir, fs::create_dir_all(&set.licenses_dir))?;
-        // drop bundled-license texts we wrote that are no longer used; leave other files
+        // drop license/exception texts cargo-tribute wrote that are no longer used; leave other files
         if let Ok(entries) = fs::read_dir(&set.licenses_dir) {
             for e in entries.flatten() {
                 let p = e.path();
@@ -326,7 +336,7 @@ fn run(check: bool, manifest_path: Option<String>, cargo_flags: Vec<String>) -> 
         }
         io(&set.manifest, fs::write(&set.manifest, &manifest))?;
         Ok(format!(
-            "wrote {}/ ({} licenses) and {} ({} crates)",
+            "wrote {}/ ({} license texts) and {} ({} crates)",
             set.licenses_link,
             texts.len(),
             set.manifest_link,
@@ -344,6 +354,21 @@ fn clarify_matches(c: &Clarify, name: &str, version: &Version) -> bool {
 // a tribute.toml [[clarify]] expression overriding this crate's declared license.
 fn clarify_expr<'a>(clarify: &'a [Clarify], name: &str, version: &Version) -> Option<&'a str> {
     clarify.iter().find(|c| clarify_matches(c, name, version)).map(|c| c.expression.as_str())
+}
+
+// SPDX exception ids (from `A WITH exception`) attached to a license we actually chose, so
+// their text ships too. a WITH on a license the OR-pick dropped is not attributed.
+fn exceptions_for(expr: &spdx::Expression, chosen: &BTreeSet<String>) -> Vec<String> {
+    expr.iter()
+        .filter_map(|node| match node {
+            ExprNode::Req(r) => {
+                let ex = r.req.addition.as_ref()?.id()?;
+                let lic = r.req.license.id()?.name;
+                chosen.contains(lic).then(|| ex.name.to_string())
+            }
+            ExprNode::Op(_) => None,
+        })
+        .collect()
 }
 
 // walk the SPDX expression (postfix) to the licenses we attribute, or None if the
@@ -396,6 +421,51 @@ fn combine(
 
 fn best(set: &BTreeSet<String>, accepted: &[String]) -> usize {
     set.iter().map(|l| accepted.iter().position(|p| p == l).unwrap_or(usize::MAX)).min().unwrap_or(usize::MAX)
+}
+
+#[derive(Serialize)]
+struct Report<'a> {
+    licenses: Vec<&'a str>,   // license ids used, with a text in the LICENSES dir
+    exceptions: Vec<&'a str>, // WITH-exception ids used
+    crates: Vec<CrateEntry<'a>>,
+}
+
+#[derive(Serialize)]
+struct CrateEntry<'a> {
+    name: &'a str,
+    version: String,
+    expression: &'a str,    // effective SPDX (clarified or declared)
+    licenses: Vec<&'a str>, // ids this crate is attributed under
+}
+
+// the resolved attribution as JSON, for audit/pipeline use. read-only: no files touched.
+fn render_json(
+    deps: &BTreeSet<&PackageId>,
+    pkg_of: &BTreeMap<&PackageId, &Package>,
+    effective: &BTreeMap<&PackageId, &str>,
+    chosen_of: &BTreeMap<&PackageId, BTreeSet<String>>,
+    by_license: &BTreeMap<String, Vec<&Package>>,
+    used_exceptions: &BTreeSet<String>,
+) -> Result<String, String> {
+    let crates: Vec<CrateEntry> = deps
+        .iter()
+        .filter_map(|id| {
+            let pkg = pkg_of.get(id).copied()?;
+            let chosen = chosen_of.get(*id)?;
+            Some(CrateEntry {
+                name: pkg.name.as_ref(),
+                version: pkg.version.to_string(),
+                expression: effective.get(*id).copied().unwrap_or(""),
+                licenses: chosen.iter().map(String::as_str).collect(),
+            })
+        })
+        .collect();
+    let report = Report {
+        licenses: by_license.keys().map(String::as_str).collect(),
+        exceptions: used_exceptions.iter().map(String::as_str).collect(),
+        crates,
+    };
+    serde_json::to_string_pretty(&report).map_err(|e| e.to_string())
 }
 
 // disk content equals `want`, ignoring line-ending style. output is always written LF,
@@ -457,8 +527,7 @@ fn render_manifest(
             let url = p.repository.clone().unwrap_or_else(|| format!("https://crates.io/crates/{}", p.name));
             // show the effective SPDX (clarified or declared) when it differs from the
             // section license, so WITH exceptions and dual-license picks are not hidden by
-            // the grouping. only the base license text is emitted; an exception text would
-            // need adding to assets/.
+            // the grouping. the exception's own text is written to the licenses dir too.
             match effective.get(&p.id).copied().filter(|e| *e != id.as_str()) {
                 Some(expr) => out.push_str(&format!("- [{} {}]({url}) -- `{expr}`\n", p.name, p.version)),
                 None => out.push_str(&format!("- [{} {}]({url})\n", p.name, p.version)),
@@ -541,12 +610,33 @@ mod tests {
         let stale = stale_outputs(&lic, &texts, &manifest_path, "MANIFEST");
         assert!(stale.iter().any(|s| s.contains("Apache-2.0.txt")));
 
-        // a hand-added file whose stem is not a bundled license id is left alone.
-        fs::write(lic.join("OpenSSL.txt"), "x").unwrap();
+        // a hand-added file whose stem is not an SPDX id is left alone.
+        fs::write(lic.join("NOTICE.txt"), "x").unwrap();
         let stale = stale_outputs(&lic, &texts, &manifest_path, "MANIFEST");
-        assert!(!stale.iter().any(|s| s.contains("OpenSSL.txt")));
+        assert!(!stale.iter().any(|s| s.contains("NOTICE.txt")));
 
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn canonical_text_covers_spdx_licenses_and_exceptions() {
+        // the spdx `text` feature, not a hand-bundled set: licenses beyond the old nine
+        // and WITH-exception bodies both resolve.
+        assert!(canonical_text("MIT").is_some());
+        assert!(canonical_text("MPL-2.0").is_some()); // never bundled by hand
+        assert!(canonical_text("LLVM-exception").is_some()); // an exception body
+        assert!(canonical_text("NotARealLicense").is_none());
+    }
+
+    #[test]
+    fn exceptions_collected_only_for_the_chosen_license() {
+        let expr = |s: &str| spdx::Expression::parse_mode(s, spdx::ParseMode::LAX).unwrap();
+        let chosen: BTreeSet<String> = ["Apache-2.0".to_string()].into_iter().collect();
+        // the WITH sits on the chosen license -> collected.
+        assert_eq!(exceptions_for(&expr("Apache-2.0 WITH LLVM-exception"), &chosen), vec!["LLVM-exception"]);
+        // an OR whose exception-bearing side (MIT) is not the chosen one -> not collected.
+        let mit_chosen: BTreeSet<String> = ["MIT".to_string()].into_iter().collect();
+        assert!(exceptions_for(&expr("(GPL-2.0 WITH GCC-exception-2.0) OR MIT"), &mit_chosen).is_empty());
     }
 
     #[test]

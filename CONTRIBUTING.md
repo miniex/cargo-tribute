@@ -17,13 +17,9 @@ Run the tool against a real tree while developing:
 cargo run -- --manifest-path /path/to/some/Cargo.toml
 ```
 
-## Adding a license
+## Allowing a license
 
-Canonical texts live in `assets/licenses/<SPDX-id>.txt` (use the SPDX-official text). To support a new license:
-
-1. Add `assets/licenses/<id>.txt`.
-2. Add the matching `include_str!` arm in `canonical_text` (`src/main.rs`).
-3. Add the id to `DEFAULT_ACCEPTED` if it should be allowed out of the box.
+License and exception texts come from the `spdx` crate, so there are no text files to add. To allow a license out of the box, add its SPDX id to `DEFAULT_ACCEPTED` (`src/main.rs`); the text resolves automatically. Per project, users can add it to `accepted` in `tribute.toml` instead.
 
 ## License resolution
 

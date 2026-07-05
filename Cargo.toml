@@ -9,11 +9,15 @@ homepage = "https://github.com/miniex/cargo-tribute"
 readme = "README.md"
 keywords = ["license", "attribution", "reuse", "spdx", "compliance"]
 categories = ["development-tools::cargo-plugins"]
+# the preview gif is only for the rendered README; keep it out of the published crate.
+exclude = ["assets"]
 
 [dependencies]
 cargo_metadata = "0.23.1"
 serde = { version = "1.0.228", features = ["derive"] }
-spdx = "0.13.4"
+serde_json = "1.0.145"
+# `text` bundles every SPDX license and exception body, so no texts are hand-maintained.
+spdx = { version = "0.13.4", features = ["text"] }
 toml = "1.1.2"
 
 # cargo-binstall: fetch a prebuilt tarball from the release for tag v{version}
