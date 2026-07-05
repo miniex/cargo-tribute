@@ -84,10 +84,15 @@ fn load_settings(root: &Utf8Path) -> Result<Settings, String> {
     })
 }
 
-// reject a config output path that is absolute or escapes the project via `..`.
+// reject a config output path that is absolute, escapes the project via `..`, or names
+// no real target (empty or "."). the last would resolve to the project root itself, so
+// orphan-cleanup (which deletes bundled-id `.txt`s) would then scan the whole tree.
 fn relative_inside(field: &str, link: &str) -> Result<(), String> {
+    use std::path::Component;
     let p = Path::new(link);
-    if p.is_absolute() || p.components().any(|c| c == std::path::Component::ParentDir) {
+    let escapes = p.is_absolute() || p.components().any(|c| c == Component::ParentDir);
+    let has_target = p.components().any(|c| matches!(c, Component::Normal(_)));
+    if escapes || !has_target {
         return Err(format!("tribute.toml: {field} must be a relative path inside the project (got '{link}')"));
     }
     Ok(())
@@ -118,6 +123,9 @@ OPTIONS:
         --check              verify the output is current; do not write (exit 1 if stale)
         --manifest-path <P>  path to Cargo.toml (default: auto-detect from the cwd)
         --locked             forwarded to `cargo metadata` (also --offline, --frozen)
+        --features <F>       forwarded to `cargo metadata`, to attribute feature-gated
+                             deps (also --all-features, --no-default-features,
+                             --filter-platform <T>)
     -h, --help               print this help
     -V, --version            print version
 
@@ -152,7 +160,15 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             },
-            "--locked" | "--offline" | "--frozen" => cargo_flags.push(a),
+            "--locked" | "--offline" | "--frozen" | "--all-features" | "--no-default-features" => cargo_flags.push(a),
+            // value-taking passthroughs; forward the flag and its value verbatim.
+            "--features" | "--filter-platform" => match args.next() {
+                Some(v) => cargo_flags.extend([a, v]),
+                None => {
+                    eprintln!("cargo-tribute: {a} needs a value");
+                    return ExitCode::FAILURE;
+                }
+            },
             "-h" | "--help" => {
                 print!("{HELP}");
                 return ExitCode::SUCCESS;
@@ -161,6 +177,8 @@ fn main() -> ExitCode {
                 println!("cargo-tribute {}", env!("CARGO_PKG_VERSION"));
                 return ExitCode::SUCCESS;
             }
+            // accept the `--features=foo`/`--filter-platform=foo` spellings cargo also takes.
+            _ if a.starts_with("--features=") || a.starts_with("--filter-platform=") => cargo_flags.push(a),
             other => {
                 eprintln!("cargo-tribute: unknown argument '{other}' (try --help)");
                 return ExitCode::FAILURE;
@@ -222,7 +240,12 @@ fn run(check: bool, manifest_path: Option<String>, cargo_flags: Vec<String>) -> 
     let mut effective: BTreeMap<&PackageId, &str> = BTreeMap::new();
     let mut failures = Vec::new();
     for id in &deps {
-        let pkg = pkg_of[id];
+        // every resolve-graph id is also in meta.packages; guard the lookup so a
+        // cargo_metadata invariant break surfaces as an error, not an index panic.
+        let Some(&pkg) = pkg_of.get(id) else {
+            failures.push(format!("{id:?}: no package metadata (internal)"));
+            continue;
+        };
         let name = format!("{} {}", pkg.name, pkg.version);
         let clarified = clarify_expr(&set.clarify, pkg.name.as_ref(), &pkg.version);
         let Some(expr_str) = clarified.or(pkg.license.as_deref()) else {
@@ -251,10 +274,8 @@ fn run(check: bool, manifest_path: Option<String>, cargo_flags: Vec<String>) -> 
     // warn on clarify entries that matched no dependency, so a typo in name or version
     // is visible instead of silently ignored.
     for c in &set.clarify {
-        let matched = deps.iter().any(|id| {
-            let p = pkg_of[id];
-            clarify_matches(c, p.name.as_ref(), &p.version)
-        });
+        let matched =
+            deps.iter().any(|id| pkg_of.get(id).is_some_and(|p| clarify_matches(c, p.name.as_ref(), &p.version)));
         if !matched {
             let ver = c.version.as_deref().map(|v| format!(" {v}")).unwrap_or_default();
             eprintln!("cargo-tribute: warning: clarify for '{}{ver}' matched no dependency", c.name);
@@ -373,6 +394,13 @@ fn best(set: &BTreeSet<String>, accepted: &[String]) -> usize {
     set.iter().map(|l| accepted.iter().position(|p| p == l).unwrap_or(usize::MAX)).min().unwrap_or(usize::MAX)
 }
 
+// disk content equals `want`, ignoring line-ending style. output is always written LF,
+// so `want` is LF; a CRLF checkout (git autocrlf) of it must not read as stale. strip
+// CR from disk before comparing.
+fn matches_output(disk: Option<String>, want: &str) -> bool {
+    disk.is_some_and(|d| d.replace("\r\n", "\n") == want)
+}
+
 // paths a plain run would create, change, or delete; empty means --check passes.
 // includes orphaned <id>.txt files the write path removes, so --check cannot pass
 // while stale license files still sit in the tree.
@@ -385,7 +413,7 @@ fn stale_outputs(
     let mut stale = Vec::new();
     for (id, want) in texts {
         let path = licenses_dir.join(format!("{id}.txt"));
-        if fs::read_to_string(&path).ok().as_deref() != Some(*want) {
+        if !matches_output(fs::read_to_string(&path).ok(), want) {
             stale.push(path.display().to_string());
         }
     }
@@ -397,7 +425,7 @@ fn stale_outputs(
             }
         }
     }
-    if fs::read_to_string(manifest_path).ok().as_deref() != Some(manifest) {
+    if !matches_output(fs::read_to_string(manifest_path).ok(), manifest) {
         stale.push(manifest_path.display().to_string());
     }
     stale
@@ -428,7 +456,7 @@ fn render_manifest(
             // the grouping. only the base license text is emitted; an exception text would
             // need adding to assets/.
             match effective.get(&p.id).copied().filter(|e| *e != id.as_str()) {
-                Some(expr) => out.push_str(&format!("- [{} {}]({url}) — `{expr}`\n", p.name, p.version)),
+                Some(expr) => out.push_str(&format!("- [{} {}]({url}) -- `{expr}`\n", p.name, p.version)),
                 None => out.push_str(&format!("- [{} {}]({url})\n", p.name, p.version)),
             }
         }
@@ -515,5 +543,32 @@ mod tests {
         assert!(!stale.iter().any(|s| s.contains("OpenSSL.txt")));
 
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn with_exception_attributes_the_base_license() {
+        // `A WITH exception` is one SPDX leaf; it is accepted iff the base license is,
+        // and attributes the base's text (the exception grants only extra permission).
+        assert_eq!(pick("Apache-2.0 WITH LLVM-exception"), Some(vec!["Apache-2.0".into()]));
+        assert_eq!(pick("GPL-3.0-only WITH Classpath-exception-2.0"), None); // base not accepted
+    }
+
+    #[test]
+    fn relative_inside_rejects_escapes_and_rootlike() {
+        assert!(relative_inside("manifest", "THIRD-PARTY.md").is_ok());
+        assert!(relative_inside("licenses-dir", "docs/LICENSES").is_ok());
+        assert!(relative_inside("manifest", "").is_err()); // no target -> project root
+        assert!(relative_inside("licenses-dir", ".").is_err()); // "." -> project root
+        assert!(relative_inside("manifest", "../escape.md").is_err());
+        assert!(relative_inside("manifest", "/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn matches_output_ignores_crlf() {
+        // a CRLF checkout (git autocrlf) of an LF-written file is not stale.
+        assert!(matches_output(Some("a\r\nb\r\n".into()), "a\nb\n"));
+        assert!(matches_output(Some("a\nb\n".into()), "a\nb\n"));
+        assert!(!matches_output(Some("a\nb\n".into()), "a\nDIFFERENT\n"));
+        assert!(!matches_output(None, "x")); // missing file is stale
     }
 }

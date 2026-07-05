@@ -6,7 +6,7 @@ Thanks for your interest in cargo-tribute.
 
 ```
 cargo build
-cargo test                     # unit tests + an end-to-end test
+cargo test                     # unit tests + end-to-end tests
 cargo clippy --all-targets     # must be clean
 cargo fmt
 ```

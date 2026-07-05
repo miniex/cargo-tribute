@@ -51,3 +51,35 @@ fn writes_manifest_then_check_roundtrips() {
 
     fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn features_flag_attributes_optional_deps() {
+    // `dep` is pulled in only by the optional `extra` feature. a default run must not
+    // attribute it; forwarding `--features extra` to cargo metadata must.
+    let dir = std::env::temp_dir().join(format!("tribute-feat-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    write(
+        &dir.join("dep/Cargo.toml"),
+        "[package]\nname = \"dep\"\nversion = \"1.0.0\"\nedition = \"2021\"\nlicense = \"MIT\"\n",
+    );
+    write(&dir.join("dep/src/lib.rs"), "");
+    write(
+        &dir.join("app/Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n\
+         [dependencies]\ndep = { path = \"../dep\", optional = true }\n\n[features]\nextra = [\"dep\"]\n",
+    );
+    write(&dir.join("app/src/main.rs"), "fn main() {}\n");
+    let manifest_path = dir.join("app/Cargo.toml");
+
+    let out = tribute(&manifest_path, &[]);
+    assert!(out.status.success(), "default run failed: {}", String::from_utf8_lossy(&out.stderr));
+    let default = fs::read_to_string(dir.join("app/THIRD-PARTY.md")).unwrap();
+    assert!(!default.contains("dep 1.0.0"), "optional dep must be omitted by default:\n{default}");
+
+    let out = tribute(&manifest_path, &["--features", "extra"]);
+    assert!(out.status.success(), "--features run failed: {}", String::from_utf8_lossy(&out.stderr));
+    let enabled = fs::read_to_string(dir.join("app/THIRD-PARTY.md")).unwrap();
+    assert!(enabled.contains("dep 1.0.0"), "--features extra must attribute the optional dep:\n{enabled}");
+
+    fs::remove_dir_all(&dir).ok();
+}

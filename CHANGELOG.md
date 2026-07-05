@@ -2,6 +2,22 @@
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Dates are KST (UTC+9).
 
+## [Unreleased]
+
+### Added
+
+- Forward `--features`, `--all-features`, `--no-default-features`, and `--filter-platform` to `cargo metadata`, so feature-gated (optional) and platform-specific dependencies can be attributed. Without them, `cargo metadata` resolves only the default feature set and silently omits optional dependencies.
+
+### Changed
+
+- In `THIRD-PARTY.md`, the separator between a crate and its SPDX expression is now `--` instead of an em-dash, so the generated file is plain ASCII. Re-run `cargo tribute` to update it.
+
+### Fixed
+
+- `--check` no longer reports the output as stale after a CRLF checkout (git `autocrlf`) of the LF-generated files; line-ending style is ignored when comparing. This also stops the endless rewrite churn on Windows.
+- Reject an empty or `"."` `manifest`/`licenses-dir`, which resolve to the project root and would make orphan-cleanup scan the whole tree.
+- A missing package in the resolve graph now surfaces as an error instead of panicking.
+
 ## [0.4.0] - 2026-07-05
 
 ### Added
