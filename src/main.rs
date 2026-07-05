@@ -205,6 +205,19 @@ fn run(check: bool, manifest_path: Option<String>) -> Result<String, String> {
             None => failures.push(format!("{name}: license '{expr_str}' not in the accepted set")),
         }
     }
+    // warn on clarify entries that matched no dependency, so a typo in name or version
+    // is visible instead of silently ignored.
+    for c in &set.clarify {
+        let matched = deps.iter().any(|id| {
+            let p = pkg_of[id];
+            clarify_matches(c, p.name.as_ref(), &p.version.to_string())
+        });
+        if !matched {
+            let ver = c.version.as_deref().map(|v| format!(" {v}")).unwrap_or_default();
+            eprintln!("cargo-tribute: warning: clarify for '{}{ver}' matched no dependency", c.name);
+        }
+    }
+
     if !failures.is_empty() {
         return Err(format!("license policy failed:\n  {}", failures.join("\n  ")));
     }
@@ -239,6 +252,10 @@ fn run(check: bool, manifest_path: Option<String>) -> Result<String, String> {
         for (id, text) in &texts {
             fs::write(set.licenses_dir.join(format!("{id}.txt")), text).map_err(|e| e.to_string())?;
         }
+        // manifest path is configurable and may sit in a subdir; create it like licenses_dir
+        if let Some(parent) = set.manifest.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
         fs::write(&set.manifest, &manifest).map_err(|e| e.to_string())?;
         Ok(format!(
             "wrote {}/ ({} licenses) and {} ({} crates)",
@@ -250,13 +267,14 @@ fn run(check: bool, manifest_path: Option<String>) -> Result<String, String> {
     }
 }
 
-// a tribute.toml [[clarify]] expression overriding this crate's declared license,
-// matched by name and (if given) exact version.
+// a clarify entry applies to this crate: name equal, and version equal if the entry pins one.
+fn clarify_matches(c: &Clarify, name: &str, version: &str) -> bool {
+    c.name == name && c.version.as_deref().is_none_or(|v| v == version)
+}
+
+// a tribute.toml [[clarify]] expression overriding this crate's declared license.
 fn clarify_expr<'a>(clarify: &'a [Clarify], name: &str, version: &str) -> Option<&'a str> {
-    clarify
-        .iter()
-        .find(|c| c.name == name && c.version.as_deref().is_none_or(|v| v == version))
-        .map(|c| c.expression.as_str())
+    clarify.iter().find(|c| clarify_matches(c, name, version)).map(|c| c.expression.as_str())
 }
 
 // walk the SPDX expression (postfix) to the licenses we attribute, or None if the

@@ -2,6 +2,16 @@
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Dates are KST (UTC+9).
 
+## [Unreleased]
+
+### Changed
+
+- Warn when a `[[clarify]]` entry matches no dependency, so a typo in its name or version is caught instead of silently ignored.
+
+### Fixed
+
+- Create the manifest's parent directory before writing, so a `manifest` path pointing into a subdirectory no longer fails; it now matches how `licenses-dir` is handled.
+
 ## [0.3.0] - 2026-07-05
 
 ### Added

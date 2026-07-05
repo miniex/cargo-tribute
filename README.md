@@ -1,5 +1,8 @@
 # cargo-tribute
 
+[![crates.io](https://img.shields.io/crates/v/cargo-tribute.svg)](https://crates.io/crates/cargo-tribute)
+[![ci](https://github.com/miniex/cargo-tribute/actions/workflows/ci.yml/badge.svg)](https://github.com/miniex/cargo-tribute/actions/workflows/ci.yml)
+
 Generate a REUSE-style `LICENSES/` folder and a per-crate attribution manifest from a Cargo dependency tree, instead of hand-maintaining third-party license notices.
 
 `cargo tribute` walks the normal-dependency closure of your workspace, resolves each crate's SPDX license expression against an accepted list, and writes:
