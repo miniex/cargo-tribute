@@ -1,6 +1,6 @@
 [package]
 name = "cargo-tribute"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 description = "Generate a REUSE-style LICENSES/ folder and third-party attribution from a Cargo dependency tree."
 license = "MIT OR Apache-2.0"

@@ -2,7 +2,7 @@
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Dates are KST (UTC+9).
 
-## [Unreleased]
+## [0.6.0] - 2026-07-06
 
 ### Added
 
@@ -97,6 +97,7 @@ First release.
 - Flags: `--manifest-path`, `--help`, `--version`.
 - Bundled canonical texts: MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, 0BSD, Zlib, Unlicense, Unicode-3.0.
 
+[0.6.0]: https://github.com/miniex/cargo-tribute/releases/tag/v0.6.0
 [0.5.1]: https://github.com/miniex/cargo-tribute/releases/tag/v0.5.1
 [0.5.0]: https://github.com/miniex/cargo-tribute/releases/tag/v0.5.0
 [0.4.0]: https://github.com/miniex/cargo-tribute/releases/tag/v0.4.0
