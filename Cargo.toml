@@ -5,6 +5,10 @@ edition = "2024"
 description = "Generate a REUSE-style LICENSES/ folder and third-party attribution from a Cargo dependency tree."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/miniex/cargo-tribute"
+homepage = "https://github.com/miniex/cargo-tribute"
+readme = "README.md"
+keywords = ["license", "attribution", "reuse", "spdx", "compliance"]
+categories = ["development-tools::cargo-plugins"]
 
 [dependencies]
 cargo_metadata = "0.23.1"

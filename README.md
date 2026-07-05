@@ -12,6 +12,8 @@ Generate a REUSE-style `LICENSES/` folder and a per-crate attribution manifest f
 
 It is a policy gate (fails if a dependency's license is not accepted) and, with `--check`, a staleness gate (fails if the committed output no longer matches the dependency tree) -- both suitable for CI.
 
+<!-- demo: drop a recording here, e.g. ![demo](assets/demo.gif) -->
+
 ## Install
 
 ```
@@ -35,6 +37,36 @@ cargo tribute --all-features      # forward --features/--all-features/--filter-p
                                   # attribute optional (feature-gated) or platform-specific deps
 cargo tribute --help
 ```
+
+## Use in CI
+
+Fail the build when a dependency's license is not accepted, or when the committed `LICENSES/` and `THIRD-PARTY.md` drift from the dependency tree:
+
+```yaml
+# .github/workflows/licenses.yml
+name: licenses
+on: [push, pull_request]
+jobs:
+  tribute:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo install cargo-tribute   # or: cargo binstall cargo-tribute
+      - run: cargo tribute --locked --check
+```
+
+## Compared to other tools
+
+All of these are good tools; this is where `cargo-tribute` differs (behavior as of writing -- check each project's latest docs).
+
+|                             | cargo-tribute                              | cargo-about              | cargo-deny            | cargo-license   |
+| --------------------------- | ------------------------------------------ | ------------------------ | --------------------- | --------------- |
+| Attribution output          | `THIRD-PARTY.md` + REUSE `LICENSES/` folder | one file from a template | none (license linter) | lists to stdout |
+| Accepted-license gate       | yes                                        | yes (config)             | yes (its focus)       | no              |
+| Staleness `--check` for CI  | yes                                        | no                       | n/a                   | no              |
+| Setup                       | zero-config (optional `tribute.toml`)      | template + `about.toml`  | `deny.toml`           | flags only      |
+
+Want a broad supply-chain linter (advisories, source bans, duplicate detection)? Reach for `cargo-deny`. `cargo-tribute` stays focused on generating and gating the attribution output.
 
 ## Configuration
 
