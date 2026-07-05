@@ -64,9 +64,13 @@ struct Settings {
 // anchor tribute.toml and outputs to the workspace root, not the cwd, so
 // --manifest-path against a crate elsewhere reads and writes beside that crate.
 fn load_settings(root: &Utf8Path) -> Result<Settings, String> {
-    let cfg: Config = match fs::read_to_string(root.join("tribute.toml")) {
+    let path = root.join("tribute.toml");
+    // only a missing file falls back to defaults; a present-but-unreadable config
+    // (bad permissions, non-UTF-8) must error, not silently ignore the policy.
+    let cfg: Config = match fs::read_to_string(&path) {
         Ok(s) => toml::from_str(&s).map_err(|e| format!("tribute.toml: {e}"))?,
-        Err(_) => Config::default(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
+        Err(e) => return Err(format!("{path}: {e}")),
     };
     let manifest_link = cfg.manifest.unwrap_or_else(|| "THIRD-PARTY.md".into());
     let licenses_link = cfg.licenses_dir.unwrap_or_else(|| "LICENSES".into());
@@ -561,6 +565,24 @@ mod tests {
         assert!(relative_inside("licenses-dir", ".").is_err()); // "." -> project root
         assert!(relative_inside("manifest", "../escape.md").is_err());
         assert!(relative_inside("manifest", "/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn unreadable_config_errors_instead_of_defaulting() {
+        use cargo_metadata::camino::Utf8PathBuf;
+        let dir = std::env::temp_dir().join(format!("tribute-cfg-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let root = Utf8PathBuf::from_path_buf(dir.clone()).unwrap();
+
+        // a present-but-non-UTF-8 tribute.toml must not be silently ignored.
+        fs::write(dir.join("tribute.toml"), [0xff, 0xfe, 0x41, 0x00]).unwrap();
+        assert!(load_settings(&root).is_err());
+
+        // a missing config still falls back to defaults.
+        fs::remove_file(dir.join("tribute.toml")).unwrap();
+        assert!(load_settings(&root).is_ok());
+
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

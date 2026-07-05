@@ -2,6 +2,12 @@
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Dates are KST (UTC+9).
 
+## [Unreleased]
+
+### Fixed
+
+- A `tribute.toml` that exists but cannot be read (bad permissions or a non-UTF-8 encoding) now errors instead of silently falling back to the built-in defaults, so a misencoded config can no longer disable the accepted-license policy without warning.
+
 ## [0.5.0] - 2026-07-05
 
 ### Added
