@@ -1,0 +1,272 @@
+//! render THIRD-PARTY.md and the JSON report, and detect stale outputs for --check.
+
+use crate::harvest::{Extras, display_author};
+use crate::policy::canonical_text;
+use cargo_metadata::semver::Version;
+use cargo_metadata::{Package, PackageId};
+use serde::Serialize;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::Path;
+
+// wrap an io result with the path, so a failure names the file instead of a bare errno.
+pub fn io<T>(path: &Path, r: std::io::Result<T>) -> Result<T, String> {
+    r.map_err(|e| format!("{}: {e}", path.display()))
+}
+
+// a LICENSES/<id>.txt cargo-tribute could write (stem is an SPDX license or exception id)
+// that is no longer used. a .txt whose stem is not an SPDX id is hand-added and left alone.
+pub fn is_stale_license(path: &Path, texts: &BTreeMap<&str, &'static str>) -> bool {
+    path.extension().is_some_and(|x| x == "txt")
+        && path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .is_some_and(|s| canonical_text(s).is_some() && !texts.contains_key(s))
+}
+
+// a NOTICES/<name>-<version>.txt cargo-tribute could write that is no longer used.
+// only a stem ending in "-<semver>" is ours; anything else is hand-added and left alone.
+pub fn is_stale_notice(path: &Path, notices: &BTreeMap<String, String>) -> bool {
+    path.extension().is_some_and(|x| x == "txt")
+        && path.file_stem().and_then(|s| s.to_str()).is_some_and(|stem| {
+            stem.rsplit_once('-').is_some_and(|(_, v)| Version::parse(v).is_ok()) && !notices.contains_key(stem)
+        })
+}
+
+#[derive(Serialize)]
+struct Report<'a> {
+    licenses: Vec<&'a str>,   // license ids used, with a text in the LICENSES dir
+    exceptions: Vec<&'a str>, // WITH-exception ids used
+    crates: Vec<CrateEntry<'a>>,
+}
+
+#[derive(Serialize)]
+struct CrateEntry<'a> {
+    name: &'a str,
+    version: String,
+    expression: &'a str,      // effective SPDX (clarified or declared)
+    licenses: Vec<&'a str>,   // ids this crate is attributed under
+    authors: &'a [String],    // metadata authors, as declared
+    copyrights: &'a [String], // "Copyright ..." lines from license/notice files
+    notice: Option<&'a str>,  // NOTICE body, when the crate ships one
+}
+
+// the resolved attribution as JSON, for audit/pipeline use. read-only: no files touched.
+pub fn render_json(
+    deps: &BTreeSet<&PackageId>,
+    pkg_of: &BTreeMap<&PackageId, &Package>,
+    effective: &BTreeMap<&PackageId, &str>,
+    chosen_of: &BTreeMap<&PackageId, BTreeSet<String>>,
+    by_license: &BTreeMap<String, Vec<&Package>>,
+    used_exceptions: &BTreeSet<String>,
+    extras: &BTreeMap<&PackageId, Extras>,
+) -> Result<String, String> {
+    let crates: Vec<CrateEntry> = deps
+        .iter()
+        .filter_map(|id| {
+            let pkg = pkg_of.get(id).copied()?;
+            let chosen = chosen_of.get(*id)?;
+            let x = extras.get(*id);
+            Some(CrateEntry {
+                name: pkg.name.as_ref(),
+                version: pkg.version.to_string(),
+                expression: effective.get(*id).copied().unwrap_or(""),
+                licenses: chosen.iter().map(String::as_str).collect(),
+                authors: x.map(|x| x.authors.as_slice()).unwrap_or(&[]),
+                copyrights: x.map(|x| x.copyrights.as_slice()).unwrap_or(&[]),
+                notice: x.and_then(|x| x.notice.as_deref()),
+            })
+        })
+        .collect();
+    let report = Report {
+        licenses: by_license.keys().map(String::as_str).collect(),
+        exceptions: used_exceptions.iter().map(String::as_str).collect(),
+        crates,
+    };
+    serde_json::to_string_pretty(&report).map_err(|e| e.to_string())
+}
+
+// disk content equals `want`, ignoring line-ending style. output is always written LF,
+// so `want` is LF; a CRLF checkout (git autocrlf) of it must not read as stale. strip
+// CR from disk before comparing.
+fn matches_output(disk: Option<String>, want: &str) -> bool {
+    disk.is_some_and(|d| d.replace("\r\n", "\n") == want)
+}
+
+// paths a plain run would create, change, or delete; empty means --check passes.
+// includes orphaned license/notice files the write path removes, so --check cannot
+// pass while stale files still sit in the tree.
+pub fn stale_outputs(
+    licenses_dir: &Path,
+    texts: &BTreeMap<&str, &'static str>,
+    notices_dir: &Path,
+    notices: &BTreeMap<String, String>,
+    manifest_path: &Path,
+    manifest: &str,
+) -> Vec<String> {
+    let mut stale = Vec::new();
+    for (id, want) in texts {
+        let path = licenses_dir.join(format!("{id}.txt"));
+        if !matches_output(fs::read_to_string(&path).ok(), want) {
+            stale.push(path.display().to_string());
+        }
+    }
+    if let Ok(entries) = fs::read_dir(licenses_dir) {
+        for e in entries.flatten() {
+            let p = e.path();
+            if is_stale_license(&p, texts) {
+                stale.push(p.display().to_string());
+            }
+        }
+    }
+    for (stem, want) in notices {
+        let path = notices_dir.join(format!("{stem}.txt"));
+        if !matches_output(fs::read_to_string(&path).ok(), want) {
+            stale.push(path.display().to_string());
+        }
+    }
+    if let Ok(entries) = fs::read_dir(notices_dir) {
+        for e in entries.flatten() {
+            let p = e.path();
+            if is_stale_notice(&p, notices) {
+                stale.push(p.display().to_string());
+            }
+        }
+    }
+    if !matches_output(fs::read_to_string(manifest_path).ok(), manifest) {
+        stale.push(manifest_path.display().to_string());
+    }
+    stale
+}
+
+pub fn render_manifest(
+    by_license: &BTreeMap<String, Vec<&Package>>,
+    effective: &BTreeMap<&PackageId, &str>,
+    extras: &BTreeMap<&PackageId, Extras>,
+    licenses_dir: &str,
+    notices_dir: &str,
+) -> String {
+    let mut out = String::from(
+        "# Third-party licenses\n\nDependencies linked into this crate, grouped by license; full texts are in \
+         [`",
+    );
+    out.push_str(licenses_dir);
+    out.push_str("/`](");
+    out.push_str(licenses_dir);
+    out.push(')');
+    // mention the notices folder only when this tree ships one.
+    if extras.values().any(|x| x.notice.is_some()) {
+        out.push_str(&format!(", NOTICE files shipped by dependencies in [`{notices_dir}/`]({notices_dir})"));
+    }
+    out.push_str(". Generated by `cargo tribute`; do not edit.\n\n");
+    for (id, pkgs) in by_license {
+        let mut ps: Vec<&Package> = pkgs.clone();
+        ps.sort_by(|a, b| (&*a.name, &a.version).cmp(&(&*b.name, &b.version)));
+        ps.dedup_by(|a, b| a.id == b.id);
+        out.push_str(&format!("## {id}\n\nText: [`{licenses_dir}/{id}.txt`]({licenses_dir}/{id}.txt)\n\n"));
+        for p in ps {
+            let url = p.repository.clone().unwrap_or_else(|| format!("https://crates.io/crates/{}", p.name));
+            out.push_str(&format!("- [{} {}]({url})", p.name, p.version));
+            // show the effective SPDX (clarified or declared) when it differs from the
+            // section license, so WITH exceptions and dual-license picks are not hidden by
+            // the grouping. the exception's own text is written to the licenses dir too.
+            if let Some(expr) = effective.get(&p.id).copied().filter(|e| *e != id.as_str()) {
+                out.push_str(&format!(" -- `{expr}`"));
+            }
+            if let Some(x) = extras.get(&p.id) {
+                // the crate's holders; MIT/BSD want the copyright notice itself reproduced.
+                if !x.copyrights.is_empty() {
+                    out.push_str(&format!(" -- {}", x.copyrights.join("; ")));
+                } else {
+                    let names: Vec<&str> =
+                        x.authors.iter().map(|a| display_author(a)).filter(|s| !s.is_empty()).collect();
+                    if !names.is_empty() {
+                        out.push_str(&format!(" -- by {}", names.join(", ")));
+                    }
+                }
+                if x.notice.is_some() {
+                    out.push_str(&format!(
+                        " -- [NOTICE]({notices_dir}/{name}-{ver}.txt)",
+                        name = p.name,
+                        ver = p.version
+                    ));
+                }
+            }
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_detects_missing_and_orphan() {
+        let dir = std::env::temp_dir().join(format!("tribute-test-{}", std::process::id()));
+        let lic = dir.join("LICENSES");
+        let not = dir.join("NOTICES");
+        fs::create_dir_all(&lic).unwrap();
+        fs::create_dir_all(&not).unwrap();
+        let manifest_path = dir.join("THIRD-PARTY.md");
+        let mut texts: BTreeMap<&str, &'static str> = BTreeMap::new();
+        texts.insert("MIT", "MIT TEXT");
+        let mut notices: BTreeMap<String, String> = BTreeMap::new();
+        notices.insert("dep-1.0.0".into(), "DEP NOTICE".into());
+
+        // nothing on disk yet: wanted license, notice, and manifest all report stale.
+        let stale = stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST");
+        assert!(stale.iter().any(|s| s.contains("MIT.txt")));
+        assert!(stale.iter().any(|s| s.contains("dep-1.0.0.txt")));
+        assert!(stale.iter().any(|s| s.contains("THIRD-PARTY.md")));
+
+        // write exactly what is wanted: nothing stale.
+        fs::write(lic.join("MIT.txt"), "MIT TEXT").unwrap();
+        fs::write(not.join("dep-1.0.0.txt"), "DEP NOTICE").unwrap();
+        fs::write(&manifest_path, "MANIFEST").unwrap();
+        assert!(stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST").is_empty());
+
+        // a leftover bundled-license text not in the wanted set is stale (we wrote it).
+        fs::write(lic.join("Apache-2.0.txt"), "x").unwrap();
+        let stale = stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST");
+        assert!(stale.iter().any(|s| s.contains("Apache-2.0.txt")));
+        fs::remove_file(lic.join("Apache-2.0.txt")).unwrap();
+
+        // a hand-added file whose stem is not an SPDX id is left alone.
+        fs::write(lic.join("NOTICE.txt"), "x").unwrap();
+        let stale = stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST");
+        assert!(!stale.iter().any(|s| s.contains("NOTICE.txt")));
+
+        // a leftover notice for a dep no longer in the tree is stale (we wrote it),
+        // but a hand-added file without a "-<semver>" stem suffix is left alone.
+        fs::write(not.join("gone-2.0.0.txt"), "x").unwrap();
+        fs::write(not.join("README.txt"), "x").unwrap();
+        let stale = stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST");
+        assert!(stale.iter().any(|s| s.contains("gone-2.0.0.txt")));
+        assert!(!stale.iter().any(|s| s.contains("README.txt")));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn stale_notice_requires_a_semver_stem_suffix() {
+        let notices: BTreeMap<String, String> = [("foo-bar-1.0.0".to_string(), String::new())].into();
+        // ours and unused -> stale; ours and used -> not; no "-<semver>" suffix -> hand-added.
+        assert!(is_stale_notice(Path::new("N/dep-2.0.0.txt"), &notices));
+        assert!(!is_stale_notice(Path::new("N/foo-bar-1.0.0.txt"), &notices));
+        assert!(!is_stale_notice(Path::new("N/NOTICE.txt"), &notices));
+        assert!(!is_stale_notice(Path::new("N/readme-notes.txt"), &notices));
+        assert!(!is_stale_notice(Path::new("N/dep-2.0.0.md"), &notices));
+    }
+
+    #[test]
+    fn matches_output_ignores_crlf() {
+        // a CRLF checkout (git autocrlf) of an LF-written file is not stale.
+        assert!(matches_output(Some("a\r\nb\r\n".into()), "a\nb\n"));
+        assert!(matches_output(Some("a\nb\n".into()), "a\nb\n"));
+        assert!(!matches_output(Some("a\nb\n".into()), "a\nDIFFERENT\n"));
+        assert!(!matches_output(None, "x")); // missing file is stale
+    }
+}

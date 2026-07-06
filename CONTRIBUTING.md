@@ -19,11 +19,21 @@ cargo run -- --manifest-path /path/to/some/Cargo.toml
 
 ## Allowing a license
 
-License and exception texts come from the `spdx` crate, so there are no text files to add. To allow a license out of the box, add its SPDX id to `DEFAULT_ACCEPTED` (`src/main.rs`); the text resolves automatically. Per project, users can add it to `accepted` in `tribute.toml` instead.
+License and exception texts come from the `spdx` crate, so there are no text files to add. To allow a license out of the box, add its SPDX id to `DEFAULT_ACCEPTED` (`src/config.rs`); the text resolves automatically. Per project, users can add it to `accepted` in `tribute.toml` instead.
+
+## Code layout
+
+- `src/main.rs` -- CLI args and the `run()` orchestration
+- `src/config.rs` -- tribute.toml: accepted list, clarify/exception entries, output paths
+- `src/policy.rs` -- SPDX expression evaluation against the accepted set
+- `src/harvest.rs` -- copyright lines and NOTICE bodies from the crate sources
+- `src/output.rs` -- THIRD-PARTY.md/JSON rendering and the `--check` staleness scan
+
+Unit tests live in each module's `tests` submodule; the end-to-end tests in `tests/cli.rs`.
 
 ## License resolution
 
-`choose`/`combine` (`src/main.rs`) evaluate the SPDX expression in postfix over an accepted-license set. When you touch them, add a case to the `tests` module.
+`choose`/`combine` (`src/policy.rs`) evaluate the SPDX expression in postfix over an accepted-license set. When you touch them, add a case to that module's tests.
 
 ## Pull requests
 
