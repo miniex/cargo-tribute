@@ -6,43 +6,43 @@ Dependencies linked into this crate, grouped by license; full texts are in [`LIC
 
 Text: [`LICENSES/Apache-2.0.txt`](LICENSES/Apache-2.0.txt)
 
-- [spdx 0.13.4](https://github.com/EmbarkStudios/spdx)
+- [spdx 0.13.4](https://github.com/EmbarkStudios/spdx) -- by Embark, Jake Shadle
 
 ## MIT
 
 Text: [`LICENSES/MIT.txt`](LICENSES/MIT.txt)
 
-- [camino 1.2.4](https://github.com/camino-rs/camino) -- `MIT OR Apache-2.0`
+- [camino 1.2.4](https://github.com/camino-rs/camino) -- `MIT OR Apache-2.0` -- by Without Boats, Ashley Williams, Steve Klabnik, Rain
 - [cargo-platform 0.3.3](https://github.com/rust-lang/cargo) -- `MIT OR Apache-2.0`
-- [cargo_metadata 0.23.1](https://github.com/oli-obk/cargo_metadata)
-- [equivalent 1.0.2](https://github.com/indexmap-rs/equivalent) -- `Apache-2.0 OR MIT`
-- [hashbrown 0.17.1](https://github.com/rust-lang/hashbrown) -- `MIT OR Apache-2.0`
-- [indexmap 2.14.0](https://github.com/indexmap-rs/indexmap) -- `Apache-2.0 OR MIT`
-- [itoa 1.0.18](https://github.com/dtolnay/itoa) -- `MIT OR Apache-2.0`
-- [memchr 2.8.2](https://github.com/BurntSushi/memchr) -- `Unlicense OR MIT`
-- [proc-macro2 1.0.106](https://github.com/dtolnay/proc-macro2) -- `MIT OR Apache-2.0`
-- [quote 1.0.46](https://github.com/dtolnay/quote) -- `MIT OR Apache-2.0`
-- [semver 1.0.28](https://github.com/dtolnay/semver) -- `MIT OR Apache-2.0`
-- [serde 1.0.228](https://github.com/serde-rs/serde) -- `MIT OR Apache-2.0`
-- [serde_core 1.0.228](https://github.com/serde-rs/serde) -- `MIT OR Apache-2.0`
-- [serde_derive 1.0.228](https://github.com/serde-rs/serde) -- `MIT OR Apache-2.0`
-- [serde_json 1.0.150](https://github.com/serde-rs/json) -- `MIT OR Apache-2.0`
-- [serde_spanned 1.1.1](https://github.com/toml-rs/toml) -- `MIT OR Apache-2.0`
-- [smallvec 1.15.2](https://github.com/servo/rust-smallvec) -- `MIT OR Apache-2.0`
-- [syn 2.0.118](https://github.com/dtolnay/syn) -- `MIT OR Apache-2.0`
-- [thiserror 2.0.18](https://github.com/dtolnay/thiserror) -- `MIT OR Apache-2.0`
-- [thiserror-impl 2.0.18](https://github.com/dtolnay/thiserror) -- `MIT OR Apache-2.0`
-- [toml 1.1.2+spec-1.1.0](https://github.com/toml-rs/toml) -- `MIT OR Apache-2.0`
-- [toml_datetime 1.1.1+spec-1.1.0](https://github.com/toml-rs/toml) -- `MIT OR Apache-2.0`
-- [toml_parser 1.1.2+spec-1.1.0](https://github.com/toml-rs/toml) -- `MIT OR Apache-2.0`
-- [toml_writer 1.1.1+spec-1.1.0](https://github.com/toml-rs/toml) -- `MIT OR Apache-2.0`
-- [unicode-ident 1.0.24](https://github.com/dtolnay/unicode-ident) -- `(MIT OR Apache-2.0) AND Unicode-3.0`
+- [cargo_metadata 0.23.1](https://github.com/oli-obk/cargo_metadata) -- by Oliver Schneider
+- [equivalent 1.0.2](https://github.com/indexmap-rs/equivalent) -- `Apache-2.0 OR MIT` -- Copyright (c) 2016--2023
+- [hashbrown 0.17.1](https://github.com/rust-lang/hashbrown) -- `MIT OR Apache-2.0` -- Copyright (c) 2016 Amanieu d'Antras
+- [indexmap 2.14.0](https://github.com/indexmap-rs/indexmap) -- `Apache-2.0 OR MIT` -- Copyright (c) 2016--2017
+- [itoa 1.0.18](https://github.com/dtolnay/itoa) -- `MIT OR Apache-2.0` -- by David Tolnay
+- [memchr 2.8.2](https://github.com/BurntSushi/memchr) -- `Unlicense OR MIT` -- Copyright (c) 2015 Andrew Gallant
+- [proc-macro2 1.0.106](https://github.com/dtolnay/proc-macro2) -- `MIT OR Apache-2.0` -- by David Tolnay, Alex Crichton
+- [quote 1.0.46](https://github.com/dtolnay/quote) -- `MIT OR Apache-2.0` -- by David Tolnay
+- [semver 1.0.28](https://github.com/dtolnay/semver) -- `MIT OR Apache-2.0` -- by David Tolnay
+- [serde 1.0.228](https://github.com/serde-rs/serde) -- `MIT OR Apache-2.0` -- by Erick Tryzelaar, David Tolnay
+- [serde_core 1.0.228](https://github.com/serde-rs/serde) -- `MIT OR Apache-2.0` -- by Erick Tryzelaar, David Tolnay
+- [serde_derive 1.0.228](https://github.com/serde-rs/serde) -- `MIT OR Apache-2.0` -- by Erick Tryzelaar, David Tolnay
+- [serde_json 1.0.150](https://github.com/serde-rs/json) -- `MIT OR Apache-2.0` -- by Erick Tryzelaar, David Tolnay
+- [serde_spanned 1.1.1](https://github.com/toml-rs/toml) -- `MIT OR Apache-2.0` -- Copyright (c) Individual contributors
+- [smallvec 1.15.2](https://github.com/servo/rust-smallvec) -- `MIT OR Apache-2.0` -- Copyright (c) 2018 The Servo Project Developers
+- [syn 2.0.118](https://github.com/dtolnay/syn) -- `MIT OR Apache-2.0` -- by David Tolnay
+- [thiserror 2.0.18](https://github.com/dtolnay/thiserror) -- `MIT OR Apache-2.0` -- by David Tolnay
+- [thiserror-impl 2.0.18](https://github.com/dtolnay/thiserror) -- `MIT OR Apache-2.0` -- by David Tolnay
+- [toml 1.1.2+spec-1.1.0](https://github.com/toml-rs/toml) -- `MIT OR Apache-2.0` -- Copyright (c) Individual contributors
+- [toml_datetime 1.1.1+spec-1.1.0](https://github.com/toml-rs/toml) -- `MIT OR Apache-2.0` -- Copyright (c) Individual contributors
+- [toml_parser 1.1.2+spec-1.1.0](https://github.com/toml-rs/toml) -- `MIT OR Apache-2.0` -- Copyright (c) Individual contributors
+- [toml_writer 1.1.1+spec-1.1.0](https://github.com/toml-rs/toml) -- `MIT OR Apache-2.0` -- Copyright (c) Individual contributors
+- [unicode-ident 1.0.24](https://github.com/dtolnay/unicode-ident) -- `(MIT OR Apache-2.0) AND Unicode-3.0` -- Copyright © 1991-2023 Unicode, Inc.
 - [winnow 1.0.3](https://github.com/winnow-rs/winnow)
-- [zmij 1.0.21](https://github.com/dtolnay/zmij)
+- [zmij 1.0.21](https://github.com/dtolnay/zmij) -- by David Tolnay
 
 ## Unicode-3.0
 
 Text: [`LICENSES/Unicode-3.0.txt`](LICENSES/Unicode-3.0.txt)
 
-- [unicode-ident 1.0.24](https://github.com/dtolnay/unicode-ident) -- `(MIT OR Apache-2.0) AND Unicode-3.0`
+- [unicode-ident 1.0.24](https://github.com/dtolnay/unicode-ident) -- `(MIT OR Apache-2.0) AND Unicode-3.0` -- Copyright © 1991-2023 Unicode, Inc.
 

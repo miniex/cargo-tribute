@@ -2,6 +2,17 @@
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Dates are KST (UTC+9).
 
+## [Unreleased]
+
+### Added
+
+- Each crate's copyright holders now appear in `THIRD-PARTY.md`: `Copyright ...` lines are harvested from the license/notice files in the crate's local sources (nothing is downloaded), falling back to the `authors` metadata, so the canonical license texts are completed by the attribution the MIT/BSD family asks to reproduce. `--json` gains per-crate `authors`, `copyrights`, and `notice` fields.
+- NOTICE files shipped by dependencies -- which Apache-2.0 section 4(d) asks redistributors to pass along -- are bundled into a `NOTICES/` folder (`notices-dir` in tribute.toml) and linked from `THIRD-PARTY.md`. They are covered by `--check` and orphan-cleaned like license texts; the folder only exists while a dependency actually ships one.
+
+### Changed
+
+- `THIRD-PARTY.md` entries now carry copyright/NOTICE information; re-run `cargo tribute` to update it.
+
 ## [0.6.0] - 2026-07-06
 
 ### Added
@@ -97,6 +108,7 @@ First release.
 - Flags: `--manifest-path`, `--help`, `--version`.
 - Bundled canonical texts: MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, 0BSD, Zlib, Unlicense, Unicode-3.0.
 
+[unreleased]: https://github.com/miniex/cargo-tribute/compare/v0.6.0...HEAD
 [0.6.0]: https://github.com/miniex/cargo-tribute/releases/tag/v0.6.0
 [0.5.1]: https://github.com/miniex/cargo-tribute/releases/tag/v0.5.1
 [0.5.0]: https://github.com/miniex/cargo-tribute/releases/tag/v0.5.0

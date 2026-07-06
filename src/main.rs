@@ -1,6 +1,7 @@
 //! From a Cargo dependency tree, write a REUSE-style LICENSES/ folder (one canonical
-//! text per license used) and a per-crate attribution manifest. `--check` verifies the
-//! output is current and every license is accepted, without writing anything.
+//! text per license used), a NOTICES/ folder (NOTICE files deps ship), and a per-crate
+//! attribution manifest with copyright lines. `--check` verifies the output is current
+//! and every license is accepted, without writing anything.
 
 use cargo_metadata::camino::Utf8Path;
 use cargo_metadata::semver::{Version, VersionReq};
@@ -30,6 +31,8 @@ struct Config {
     manifest: Option<String>,
     #[serde(rename = "licenses-dir")]
     licenses_dir: Option<String>,
+    #[serde(rename = "notices-dir")]
+    notices_dir: Option<String>,
     clarify: Option<Vec<Clarify>>,
 }
 
@@ -50,6 +53,8 @@ struct Settings {
     manifest_link: String, // relative name, for messages
     licenses_dir: PathBuf, // absolute output dir
     licenses_link: String, // relative name, for markdown links + messages
+    notices_dir: PathBuf,  // absolute output dir for NOTICE files
+    notices_link: String,  // relative name, for markdown links + messages
 }
 
 // anchor tribute.toml and outputs to the workspace root, not the cwd, so
@@ -65,17 +70,21 @@ fn load_settings(root: &Utf8Path) -> Result<Settings, String> {
     };
     let manifest_link = cfg.manifest.unwrap_or_else(|| "THIRD-PARTY.md".into());
     let licenses_link = cfg.licenses_dir.unwrap_or_else(|| "LICENSES".into());
+    let notices_link = cfg.notices_dir.unwrap_or_else(|| "NOTICES".into());
     // keep outputs inside the project: an absolute or `..` path would let the write and the
     // orphan-cleanup (which deletes `.txt`) touch files outside the tree.
     relative_inside("manifest", &manifest_link)?;
     relative_inside("licenses-dir", &licenses_link)?;
+    relative_inside("notices-dir", &notices_link)?;
     Ok(Settings {
         accepted: cfg.accepted.unwrap_or_else(|| DEFAULT_ACCEPTED.iter().map(|s| s.to_string()).collect()),
         clarify: cfg.clarify.unwrap_or_default(),
         manifest: root.join(&manifest_link).into(),
         licenses_dir: root.join(&licenses_link).into(),
+        notices_dir: root.join(&notices_link).into(),
         manifest_link,
         licenses_link,
+        notices_link,
     })
 }
 
@@ -98,6 +107,104 @@ fn io<T>(path: &Path, r: std::io::Result<T>) -> Result<T, String> {
     r.map_err(|e| format!("{}: {e}", path.display()))
 }
 
+// per-crate extras from the crate source: copyright lines out of license/notice
+// files (authors as a fallback), and the NOTICE body Apache-2.0 4(d) says to pass along.
+struct Extras {
+    copyrights: Vec<String>, // "Copyright ..." lines, deduped and sorted
+    authors: Vec<String>,    // metadata authors, as declared
+    notice: Option<String>,  // NOTICE file contents, LF-normalized
+}
+
+// scan the crate root (already local in cargo's registry cache, so still offline).
+// best-effort: an unreadable or huge file is skipped, extras never gate.
+fn harvest_extras(pkg: &Package) -> Extras {
+    const MAX_LEN: u64 = 1_000_000;
+    let mut copyrights = BTreeSet::new();
+    let mut notice_parts: Vec<String> = Vec::new();
+    if let Some(dir) = pkg.manifest_path.parent() {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| e.file_name().into_string().ok())
+            .collect();
+        names.sort(); // deterministic order across platforms
+        for name in names {
+            let lower = name.to_lowercase();
+            let stem = lower.split('.').next().unwrap_or("");
+            let is_notice = stem == "notice" || stem == "notices";
+            let is_license = ["license", "licence", "copying", "copyright"].iter().any(|p| lower.starts_with(p));
+            if !is_notice && !is_license {
+                continue;
+            }
+            let path = dir.join(&name);
+            // skip directories (e.g. a LICENSES/ folder) and oversized files.
+            if !fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() <= MAX_LEN) {
+                continue;
+            }
+            let Ok(bytes) = fs::read(&path) else { continue };
+            // LF-normalize now, so a CRLF NOTICE source can't read as stale in --check.
+            let text = String::from_utf8_lossy(&bytes).replace("\r\n", "\n");
+            copyright_lines(&text, &mut copyrights);
+            if is_notice {
+                notice_parts.push(text);
+            }
+        }
+    }
+    Extras {
+        copyrights: copyrights.into_iter().collect(),
+        authors: pkg.authors.clone(),
+        notice: (!notice_parts.is_empty()).then(|| notice_parts.join("\n")),
+    }
+}
+
+// "Copyright ..." lines from a license or notice file, whitespace-normalized.
+fn copyright_lines(text: &str, out: &mut BTreeSet<String>) {
+    // fill-in-the-blank template lines (the Apache-2.0 appendix, MIT boilerplate)
+    // name nobody.
+    const PLACEHOLDERS: &[&str] = &[
+        "yyyy", // [yyyy] and {yyyy}
+        "name of copyright owner",
+        "<year>",
+        "<owner>",
+        "<copyright holder", // covers <copyright holder> and <copyright holders>
+        "<name of author>",
+        "{year}",
+        "{owner}",
+    ];
+    // words after "Copyright" in headings and license prose ("COPYRIGHT AND
+    // PERMISSION NOTICE"), never in a real holder statement.
+    const NOT_A_HOLDER: &[&str] = &["and", "notice", "notices", "license", "licenses", "law", "laws"];
+    for raw in text.lines() {
+        let line = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+        // only a capitalized "Copyright" (or the sign) starts a real statement; a
+        // lower-case "copyright ..." is a wrapped mid-sentence fragment of the
+        // license body itself (common in the Apache-2.0 text).
+        let Some(rest) = ["Copyright", "COPYRIGHT", "©"].iter().find_map(|p| line.strip_prefix(p)) else { continue };
+        if PLACEHOLDERS.iter().any(|p| line.to_lowercase().contains(p)) {
+            continue;
+        }
+        // a bare "Copyright" heading or "Copyright (c)" alone names nobody.
+        let holder = rest.replace("(c)", " ").replace("(C)", " ");
+        if !holder.chars().any(|c| c.is_alphanumeric()) {
+            continue;
+        }
+        let first = holder.split_whitespace().next().unwrap_or("").trim_matches(|c: char| !c.is_alphanumeric());
+        if NOT_A_HOLDER.contains(&first.to_lowercase().as_str()) {
+            continue;
+        }
+        out.insert(line);
+    }
+}
+
+// "Alice <alice@example.com>" -> "Alice"; an email-only entry is kept as-is.
+fn display_author(a: &str) -> &str {
+    match a.split_once('<') {
+        Some((name, _)) if !name.trim().is_empty() => name.trim(),
+        _ => a.trim(),
+    }
+}
+
 // a LICENSES/<id>.txt cargo-tribute could write (stem is an SPDX license or exception id)
 // that is no longer used. a .txt whose stem is not an SPDX id is hand-added and left alone.
 fn is_stale_license(path: &Path, texts: &BTreeMap<&str, &'static str>) -> bool {
@@ -106,6 +213,15 @@ fn is_stale_license(path: &Path, texts: &BTreeMap<&str, &'static str>) -> bool {
             .file_stem()
             .and_then(|s| s.to_str())
             .is_some_and(|s| canonical_text(s).is_some() && !texts.contains_key(s))
+}
+
+// a NOTICES/<name>-<version>.txt cargo-tribute could write that is no longer used.
+// only a stem ending in "-<semver>" is ours; anything else is hand-added and left alone.
+fn is_stale_notice(path: &Path, notices: &BTreeMap<String, String>) -> bool {
+    path.extension().is_some_and(|x| x == "txt")
+        && path.file_stem().and_then(|s| s.to_str()).is_some_and(|stem| {
+            stem.rsplit_once('-').is_some_and(|(_, v)| Version::parse(v).is_ok()) && !notices.contains_key(stem)
+        })
 }
 
 const HELP: &str = "\
@@ -129,6 +245,7 @@ CONFIG (tribute.toml in the project root, all optional):
     accepted = [\"MIT\", \"Apache-2.0\", ...]   # allowed licenses; also the OR preference order
     manifest = \"THIRD-PARTY.md\"              # attribution manifest path
     licenses-dir = \"LICENSES\"                # folder for the canonical license texts
+    notices-dir = \"NOTICES\"                  # folder for NOTICE files shipped by dependencies
 
     [[clarify]]                              # override a crate's license (missing/wrong/non-SPDX)
     name = \"ring\"
@@ -297,6 +414,18 @@ fn run(check: bool, json: bool, manifest_path: Option<String>, cargo_flags: Vec<
         return Err(format!("license policy failed:\n  {}", failures.join("\n  ")));
     }
 
+    // per-crate copyright lines and NOTICE bodies, from the local sources.
+    let mut extras: BTreeMap<&PackageId, Extras> = BTreeMap::new();
+    let mut notices: BTreeMap<String, String> = BTreeMap::new();
+    for id in &deps {
+        let Some(&pkg) = pkg_of.get(id) else { continue };
+        let x = harvest_extras(pkg);
+        if let Some(n) = &x.notice {
+            notices.insert(format!("{}-{}", pkg.name, pkg.version), n.clone());
+        }
+        extras.insert(*id, x);
+    }
+
     // resolve each used license and exception id to its canonical text.
     let mut texts: BTreeMap<&str, &'static str> = BTreeMap::new();
     for id in by_license.keys().map(String::as_str).chain(used_exceptions.iter().map(String::as_str)) {
@@ -305,16 +434,17 @@ fn run(check: bool, json: bool, manifest_path: Option<String>, cargo_flags: Vec<
     }
     // --json is a read-only report of what the tree resolves to; it never writes or checks.
     if json {
-        return render_json(&deps, &pkg_of, &effective, &chosen_of, &by_license, &used_exceptions);
+        return render_json(&deps, &pkg_of, &effective, &chosen_of, &by_license, &used_exceptions, &extras);
     }
-    let manifest = render_manifest(&by_license, &effective, &set.licenses_link);
+    let manifest = render_manifest(&by_license, &effective, &extras, &set.licenses_link, &set.notices_link);
 
     if check {
-        let stale = stale_outputs(&set.licenses_dir, &texts, &set.manifest, &manifest);
+        let stale = stale_outputs(&set.licenses_dir, &texts, &set.notices_dir, &notices, &set.manifest, &manifest);
         if !stale.is_empty() {
             return Err(format!("out of date (run `cargo tribute`):\n  {}", stale.join("\n  ")));
         }
-        Ok(format!("up to date: {} license texts, {} crates", texts.len(), deps.len()))
+        let n = if notices.is_empty() { String::new() } else { format!(", {} notices", notices.len()) };
+        Ok(format!("up to date: {} license texts{n}, {} crates", texts.len(), deps.len()))
     } else {
         io(&set.licenses_dir, fs::create_dir_all(&set.licenses_dir))?;
         // drop license/exception texts cargo-tribute wrote that are no longer used; leave other files
@@ -330,13 +460,37 @@ fn run(check: bool, json: bool, manifest_path: Option<String>, cargo_flags: Vec<
             let p = set.licenses_dir.join(format!("{id}.txt"));
             io(&p, fs::write(&p, text))?;
         }
+        // drop NOTICE files we wrote that are no longer used; keep the folder only
+        // while there is something to ship.
+        if let Ok(entries) = fs::read_dir(&set.notices_dir) {
+            for e in entries.flatten() {
+                let p = e.path();
+                if is_stale_notice(&p, &notices) {
+                    let _ = fs::remove_file(p);
+                }
+            }
+        }
+        if notices.is_empty() {
+            let _ = fs::remove_dir(&set.notices_dir); // only removes an empty dir
+        } else {
+            io(&set.notices_dir, fs::create_dir_all(&set.notices_dir))?;
+            for (stem, text) in &notices {
+                let p = set.notices_dir.join(format!("{stem}.txt"));
+                io(&p, fs::write(&p, text))?;
+            }
+        }
         // manifest path is configurable and may sit in a subdir; create it like licenses_dir
         if let Some(parent) = set.manifest.parent() {
             io(parent, fs::create_dir_all(parent))?;
         }
         io(&set.manifest, fs::write(&set.manifest, &manifest))?;
+        let n = if notices.is_empty() {
+            String::new()
+        } else {
+            format!(", {}/ ({} notices)", set.notices_link, notices.len())
+        };
         Ok(format!(
-            "wrote {}/ ({} license texts) and {} ({} crates)",
+            "wrote {}/ ({} license texts){n} and {} ({} crates)",
             set.licenses_link,
             texts.len(),
             set.manifest_link,
@@ -434,8 +588,11 @@ struct Report<'a> {
 struct CrateEntry<'a> {
     name: &'a str,
     version: String,
-    expression: &'a str,    // effective SPDX (clarified or declared)
-    licenses: Vec<&'a str>, // ids this crate is attributed under
+    expression: &'a str,      // effective SPDX (clarified or declared)
+    licenses: Vec<&'a str>,   // ids this crate is attributed under
+    authors: &'a [String],    // metadata authors, as declared
+    copyrights: &'a [String], // "Copyright ..." lines from license/notice files
+    notice: Option<&'a str>,  // NOTICE body, when the crate ships one
 }
 
 // the resolved attribution as JSON, for audit/pipeline use. read-only: no files touched.
@@ -446,17 +603,22 @@ fn render_json(
     chosen_of: &BTreeMap<&PackageId, BTreeSet<String>>,
     by_license: &BTreeMap<String, Vec<&Package>>,
     used_exceptions: &BTreeSet<String>,
+    extras: &BTreeMap<&PackageId, Extras>,
 ) -> Result<String, String> {
     let crates: Vec<CrateEntry> = deps
         .iter()
         .filter_map(|id| {
             let pkg = pkg_of.get(id).copied()?;
             let chosen = chosen_of.get(*id)?;
+            let x = extras.get(*id);
             Some(CrateEntry {
                 name: pkg.name.as_ref(),
                 version: pkg.version.to_string(),
                 expression: effective.get(*id).copied().unwrap_or(""),
                 licenses: chosen.iter().map(String::as_str).collect(),
+                authors: x.map(|x| x.authors.as_slice()).unwrap_or(&[]),
+                copyrights: x.map(|x| x.copyrights.as_slice()).unwrap_or(&[]),
+                notice: x.and_then(|x| x.notice.as_deref()),
             })
         })
         .collect();
@@ -476,11 +638,13 @@ fn matches_output(disk: Option<String>, want: &str) -> bool {
 }
 
 // paths a plain run would create, change, or delete; empty means --check passes.
-// includes orphaned <id>.txt files the write path removes, so --check cannot pass
-// while stale license files still sit in the tree.
+// includes orphaned license/notice files the write path removes, so --check cannot
+// pass while stale files still sit in the tree.
 fn stale_outputs(
     licenses_dir: &Path,
     texts: &BTreeMap<&str, &'static str>,
+    notices_dir: &Path,
+    notices: &BTreeMap<String, String>,
     manifest_path: &Path,
     manifest: &str,
 ) -> Vec<String> {
@@ -499,6 +663,20 @@ fn stale_outputs(
             }
         }
     }
+    for (stem, want) in notices {
+        let path = notices_dir.join(format!("{stem}.txt"));
+        if !matches_output(fs::read_to_string(&path).ok(), want) {
+            stale.push(path.display().to_string());
+        }
+    }
+    if let Ok(entries) = fs::read_dir(notices_dir) {
+        for e in entries.flatten() {
+            let p = e.path();
+            if is_stale_notice(&p, notices) {
+                stale.push(p.display().to_string());
+            }
+        }
+    }
     if !matches_output(fs::read_to_string(manifest_path).ok(), manifest) {
         stale.push(manifest_path.display().to_string());
     }
@@ -508,7 +686,9 @@ fn stale_outputs(
 fn render_manifest(
     by_license: &BTreeMap<String, Vec<&Package>>,
     effective: &BTreeMap<&PackageId, &str>,
+    extras: &BTreeMap<&PackageId, Extras>,
     licenses_dir: &str,
+    notices_dir: &str,
 ) -> String {
     let mut out = String::from(
         "# Third-party licenses\n\nDependencies linked into this crate, grouped by license; full texts are in \
@@ -517,7 +697,12 @@ fn render_manifest(
     out.push_str(licenses_dir);
     out.push_str("/`](");
     out.push_str(licenses_dir);
-    out.push_str("). Generated by `cargo tribute`; do not edit.\n\n");
+    out.push(')');
+    // mention the notices folder only when this tree ships one.
+    if extras.values().any(|x| x.notice.is_some()) {
+        out.push_str(&format!(", NOTICE files shipped by dependencies in [`{notices_dir}/`]({notices_dir})"));
+    }
+    out.push_str(". Generated by `cargo tribute`; do not edit.\n\n");
     for (id, pkgs) in by_license {
         let mut ps: Vec<&Package> = pkgs.clone();
         ps.sort_by(|a, b| (&*a.name, &a.version).cmp(&(&*b.name, &b.version)));
@@ -525,13 +710,33 @@ fn render_manifest(
         out.push_str(&format!("## {id}\n\nText: [`{licenses_dir}/{id}.txt`]({licenses_dir}/{id}.txt)\n\n"));
         for p in ps {
             let url = p.repository.clone().unwrap_or_else(|| format!("https://crates.io/crates/{}", p.name));
+            out.push_str(&format!("- [{} {}]({url})", p.name, p.version));
             // show the effective SPDX (clarified or declared) when it differs from the
             // section license, so WITH exceptions and dual-license picks are not hidden by
             // the grouping. the exception's own text is written to the licenses dir too.
-            match effective.get(&p.id).copied().filter(|e| *e != id.as_str()) {
-                Some(expr) => out.push_str(&format!("- [{} {}]({url}) -- `{expr}`\n", p.name, p.version)),
-                None => out.push_str(&format!("- [{} {}]({url})\n", p.name, p.version)),
+            if let Some(expr) = effective.get(&p.id).copied().filter(|e| *e != id.as_str()) {
+                out.push_str(&format!(" -- `{expr}`"));
             }
+            if let Some(x) = extras.get(&p.id) {
+                // the crate's holders; MIT/BSD want the copyright notice itself reproduced.
+                if !x.copyrights.is_empty() {
+                    out.push_str(&format!(" -- {}", x.copyrights.join("; ")));
+                } else {
+                    let names: Vec<&str> =
+                        x.authors.iter().map(|a| display_author(a)).filter(|s| !s.is_empty()).collect();
+                    if !names.is_empty() {
+                        out.push_str(&format!(" -- by {}", names.join(", ")));
+                    }
+                }
+                if x.notice.is_some() {
+                    out.push_str(&format!(
+                        " -- [NOTICE]({notices_dir}/{name}-{ver}.txt)",
+                        name = p.name,
+                        ver = p.version
+                    ));
+                }
+            }
+            out.push('\n');
         }
         out.push('\n');
     }
@@ -590,32 +795,87 @@ mod tests {
     fn stale_detects_missing_and_orphan() {
         let dir = std::env::temp_dir().join(format!("tribute-test-{}", std::process::id()));
         let lic = dir.join("LICENSES");
+        let not = dir.join("NOTICES");
         fs::create_dir_all(&lic).unwrap();
+        fs::create_dir_all(&not).unwrap();
         let manifest_path = dir.join("THIRD-PARTY.md");
         let mut texts: BTreeMap<&str, &'static str> = BTreeMap::new();
         texts.insert("MIT", "MIT TEXT");
+        let mut notices: BTreeMap<String, String> = BTreeMap::new();
+        notices.insert("dep-1.0.0".into(), "DEP NOTICE".into());
 
-        // nothing on disk yet: wanted license and manifest both report stale.
-        let stale = stale_outputs(&lic, &texts, &manifest_path, "MANIFEST");
+        // nothing on disk yet: wanted license, notice, and manifest all report stale.
+        let stale = stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST");
         assert!(stale.iter().any(|s| s.contains("MIT.txt")));
+        assert!(stale.iter().any(|s| s.contains("dep-1.0.0.txt")));
         assert!(stale.iter().any(|s| s.contains("THIRD-PARTY.md")));
 
         // write exactly what is wanted: nothing stale.
         fs::write(lic.join("MIT.txt"), "MIT TEXT").unwrap();
+        fs::write(not.join("dep-1.0.0.txt"), "DEP NOTICE").unwrap();
         fs::write(&manifest_path, "MANIFEST").unwrap();
-        assert!(stale_outputs(&lic, &texts, &manifest_path, "MANIFEST").is_empty());
+        assert!(stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST").is_empty());
 
         // a leftover bundled-license text not in the wanted set is stale (we wrote it).
         fs::write(lic.join("Apache-2.0.txt"), "x").unwrap();
-        let stale = stale_outputs(&lic, &texts, &manifest_path, "MANIFEST");
+        let stale = stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST");
         assert!(stale.iter().any(|s| s.contains("Apache-2.0.txt")));
+        fs::remove_file(lic.join("Apache-2.0.txt")).unwrap();
 
         // a hand-added file whose stem is not an SPDX id is left alone.
         fs::write(lic.join("NOTICE.txt"), "x").unwrap();
-        let stale = stale_outputs(&lic, &texts, &manifest_path, "MANIFEST");
+        let stale = stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST");
         assert!(!stale.iter().any(|s| s.contains("NOTICE.txt")));
 
+        // a leftover notice for a dep no longer in the tree is stale (we wrote it),
+        // but a hand-added file without a "-<semver>" stem suffix is left alone.
+        fs::write(not.join("gone-2.0.0.txt"), "x").unwrap();
+        fs::write(not.join("README.txt"), "x").unwrap();
+        let stale = stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST");
+        assert!(stale.iter().any(|s| s.contains("gone-2.0.0.txt")));
+        assert!(!stale.iter().any(|s| s.contains("README.txt")));
+
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn copyright_lines_extracts_holders_and_skips_boilerplate() {
+        let mut out = BTreeSet::new();
+        copyright_lines(
+            "MIT License\n\n  Copyright   (c)  2019 The dep   Developers\nCopyright 2024 Alice\n© 2024 Bob\n\
+             Copyright (c) <year> <copyright holders>\nCopyright [yyyy] [name of copyright owner]\n\
+             Copyright {yyyy} {name of copyright owner}\nCopyright\nCopyright (c)\n\
+             copyright license to reproduce, prepare Derivative Works of,\n\
+             copyright notice that is included in or attached to the work\n\
+             COPYRIGHT AND PERMISSION NOTICE\nPermission is hereby granted...\n",
+            &mut out,
+        );
+        let got: Vec<&str> = out.iter().map(String::as_str).collect();
+        // real holders kept, whitespace normalized; placeholders, bare headings,
+        // and wrapped license-body fragments dropped.
+        assert_eq!(got, vec!["Copyright (c) 2019 The dep Developers", "Copyright 2024 Alice", "© 2024 Bob"]);
+
+        // duplicates across files dedup via the shared set.
+        copyright_lines("Copyright 2024 Alice\n", &mut out);
+        assert_eq!(out.len(), 3);
+    }
+
+    #[test]
+    fn display_author_strips_email() {
+        assert_eq!(display_author("Alice <alice@example.com>"), "Alice");
+        assert_eq!(display_author("Bob"), "Bob");
+        assert_eq!(display_author("<only@email.com>"), "<only@email.com>");
+    }
+
+    #[test]
+    fn stale_notice_requires_a_semver_stem_suffix() {
+        let notices: BTreeMap<String, String> = [("foo-bar-1.0.0".to_string(), String::new())].into();
+        // ours and unused -> stale; ours and used -> not; no "-<semver>" suffix -> hand-added.
+        assert!(is_stale_notice(Path::new("N/dep-2.0.0.txt"), &notices));
+        assert!(!is_stale_notice(Path::new("N/foo-bar-1.0.0.txt"), &notices));
+        assert!(!is_stale_notice(Path::new("N/NOTICE.txt"), &notices));
+        assert!(!is_stale_notice(Path::new("N/readme-notes.txt"), &notices));
+        assert!(!is_stale_notice(Path::new("N/dep-2.0.0.md"), &notices));
     }
 
     #[test]

@@ -8,7 +8,8 @@ Generate a REUSE-style `LICENSES/` folder and a per-crate attribution manifest f
 `cargo tribute` walks the normal-dependency closure of your workspace, resolves each crate's SPDX license expression against an accepted list, and writes:
 
 - `LICENSES/<id>.txt` -- one canonical license text per license actually used
-- `THIRD-PARTY.md` -- dependencies grouped by license, linking to the texts
+- `NOTICES/<crate>-<version>.txt` -- NOTICE files shipped by dependencies (the ones Apache-2.0 section 4(d) asks redistributors to pass along), only when a dependency actually ships one
+- `THIRD-PARTY.md` -- dependencies grouped by license with each crate's copyright holders, linking to the texts
 
 It is a policy gate (fails if a dependency's license is not accepted) and, with `--check`, a staleness gate (fails if the committed output no longer matches the dependency tree) -- both suitable for CI.
 
@@ -29,7 +30,7 @@ cargo binstall cargo-tribute
 ## Usage
 
 ```
-cargo tribute                     # write LICENSES/ and THIRD-PARTY.md
+cargo tribute                     # write LICENSES/, NOTICES/ and THIRD-PARTY.md
 cargo tribute --check             # verify they are current and every license is accepted
 cargo tribute --manifest-path P   # run against a specific Cargo.toml (writes at its workspace root)
 cargo tribute --locked --check    # forward --locked/--offline/--frozen to cargo metadata (for CI)
@@ -41,7 +42,7 @@ cargo tribute --help
 
 ## Use in CI
 
-Fail the build when a dependency's license is not accepted, or when the committed `LICENSES/` and `THIRD-PARTY.md` drift from the dependency tree:
+Fail the build when a dependency's license is not accepted, or when the committed `LICENSES/`, `NOTICES/`, and `THIRD-PARTY.md` drift from the dependency tree:
 
 ```yaml
 # .github/workflows/licenses.yml
@@ -63,6 +64,7 @@ All of these are good tools; this is where `cargo-tribute` differs (behavior as 
 |                             | cargo-tribute                              | cargo-about              | cargo-deny            | cargo-license   |
 | --------------------------- | ------------------------------------------ | ------------------------ | --------------------- | --------------- |
 | Attribution output          | `THIRD-PARTY.md` + REUSE `LICENSES/` folder | one file from a template | none (license linter) | lists to stdout |
+| Copyright lines + NOTICE files | yes                                     | no                       | no                    | authors only    |
 | Accepted-license gate       | yes                                        | yes (config)             | yes (its focus)       | no              |
 | Staleness `--check` for CI  | yes                                        | no                       | n/a                   | no              |
 | Setup                       | zero-config (optional `tribute.toml`)      | template + `about.toml`  | `deny.toml`           | flags only      |
@@ -77,6 +79,7 @@ A `tribute.toml` in the project root overrides the defaults (all fields optional
 accepted = ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "0BSD", "Zlib", "Unlicense", "Unicode-3.0"]
 manifest = "THIRD-PARTY.md"   # attribution manifest path
 licenses-dir = "LICENSES"     # folder for the canonical license texts
+notices-dir = "NOTICES"       # folder for NOTICE files shipped by dependencies
 
 # override a crate's license -- for crates that declare `license-file` instead of
 # `license`, or whose `license` field is wrong or non-SPDX. Repeatable.
@@ -93,6 +96,13 @@ Each crate's SPDX expression is evaluated against `accepted` (which is also the 
 Only normal (runtime) dependencies are attributed -- dev- and build-dependencies are skipped. By default `cargo metadata` resolves the default feature set, so optional (feature-gated) dependencies are not attributed unless you enable them with `--features`/`--all-features`. Canonical license texts (and `WITH` exception texts) come from the [`spdx`](https://crates.io/crates/spdx) crate, so every SPDX license and exception is covered with no texts to hand-maintain.
 
 A crate with no `license` field (it declares `license-file` instead), or a wrong or non-SPDX one, is a hard error until you give it an SPDX expression with a `[[clarify]]` entry; the clarified expression then flows through the same accepted-set policy.
+
+## Copyright lines and NOTICE files
+
+A canonical license text alone is not complete attribution: the MIT/BSD family asks for the copyright notice itself to be reproduced, and Apache-2.0 section 4(d) asks redistributors to pass NOTICE files along. So each dependency's local sources (the same files cargo builds from -- nothing is downloaded) are scanned:
+
+- `Copyright ...` lines found in the crate's bundled license/notice files appear beside the crate in `THIRD-PARTY.md`; a crate that ships none falls back to its `authors` metadata.
+- A `NOTICE` file is bundled into `NOTICES/<crate>-<version>.txt` and linked from the crate's entry. The folder only exists while a dependency actually ships one, and stale files are cleaned up (and flagged by `--check`) like license texts.
 
 ## License
 

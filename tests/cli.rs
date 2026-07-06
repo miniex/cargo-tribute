@@ -17,18 +17,28 @@ fn tribute(manifest: &Path, extra: &[&str]) -> std::process::Output {
 
 #[test]
 fn writes_manifest_then_check_roundtrips() {
-    // standalone `app` (the workspace member, excluded) with a non-member path
-    // dependency `dep` (MIT, attributed).
+    // standalone `app` (the workspace member, excluded) with two non-member path
+    // dependencies: `dep` (MIT, ships LICENSE + NOTICE) and `dep2` (MIT, authors only).
     let dir = std::env::temp_dir().join(format!("tribute-e2e-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     write(
         &dir.join("dep/Cargo.toml"),
-        "[package]\nname = \"dep\"\nversion = \"1.0.0\"\nedition = \"2021\"\nlicense = \"MIT\"\n",
+        "[package]\nname = \"dep\"\nversion = \"1.0.0\"\nedition = \"2021\"\nlicense = \"MIT\"\n\
+         authors = [\"Dep Author <dep@example.com>\"]\n",
     );
     write(&dir.join("dep/src/lib.rs"), "");
+    write(&dir.join("dep/LICENSE"), "Copyright (c) 2024 Dep Author\n\nPermission is hereby granted...\n");
+    write(&dir.join("dep/NOTICE"), "dep\nCopyright 2024 Dep Author\n");
+    write(
+        &dir.join("dep2/Cargo.toml"),
+        "[package]\nname = \"dep2\"\nversion = \"1.0.0\"\nedition = \"2021\"\nlicense = \"MIT\"\n\
+         authors = [\"Alice <alice@example.com>\"]\n",
+    );
+    write(&dir.join("dep2/src/lib.rs"), "");
     write(
         &dir.join("app/Cargo.toml"),
-        "[package]\nname = \"app\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\ndep = { path = \"../dep\" }\n",
+        "[package]\nname = \"app\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n\
+         [dependencies]\ndep = { path = \"../dep\" }\ndep2 = { path = \"../dep2\" }\n",
     );
     write(&dir.join("app/src/main.rs"), "fn main() {}\n");
     let manifest_path = dir.join("app/Cargo.toml");
@@ -42,8 +52,25 @@ fn writes_manifest_then_check_roundtrips() {
     assert!(!manifest.contains("app 0.0.0"), "workspace member must be excluded:\n{manifest}");
     assert!(dir.join("app/LICENSES/MIT.txt").exists());
 
+    // dep's copyright line comes from its LICENSE; dep2 has none, so its
+    // metadata authors show instead (email stripped).
+    assert!(manifest.contains("Copyright (c) 2024 Dep Author"), "manifest:\n{manifest}");
+    assert!(manifest.contains("by Alice"), "manifest:\n{manifest}");
+    assert!(!manifest.contains("alice@example.com"), "author email must be stripped:\n{manifest}");
+
+    // dep's NOTICE is bundled and linked from the manifest.
+    assert!(manifest.contains("NOTICES/dep-1.0.0.txt"), "manifest:\n{manifest}");
+    let notice = fs::read_to_string(dir.join("app/NOTICES/dep-1.0.0.txt")).unwrap();
+    assert!(notice.contains("Copyright 2024 Dep Author"), "notice:\n{notice}");
+
     // --check passes immediately after a write.
     assert!(tribute(&manifest_path, &["--check"]).status.success(), "check should pass after write");
+
+    // tampering a bundled notice makes --check fail; a rewrite repairs it.
+    fs::write(dir.join("app/NOTICES/dep-1.0.0.txt"), "stale\n").unwrap();
+    assert!(!tribute(&manifest_path, &["--check"]).status.success(), "check should fail on stale notice");
+    assert!(tribute(&manifest_path, &[]).status.success());
+    assert!(tribute(&manifest_path, &["--check"]).status.success(), "rewrite should repair the notice");
 
     // tampering the manifest makes --check fail.
     fs::write(dir.join("app/THIRD-PARTY.md"), "stale\n").unwrap();
