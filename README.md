@@ -67,6 +67,7 @@ All of these are good tools; this is where `cargo-tribute` differs (behavior as 
 | Copyright lines + NOTICE files | yes                                         | no                       | no                    | authors only    |
 | Accepted-license gate          | yes                                         | yes (config)             | yes (its focus)       | no              |
 | Per-crate exceptions           | yes (`[[exception]]`)                       | per-crate accepted       | yes (`exceptions`)    | no              |
+| Vendored non-crate code        | yes (`[[extra]]`)                           | no                       | no                    | no              |
 | Staleness `--check` for CI     | yes                                         | no                       | n/a                   | no              |
 | Setup                          | zero-config (optional `tribute.toml`)       | template + `about.toml`  | `deny.toml`           | flags only      |
 
@@ -96,6 +97,20 @@ expression = "MIT AND ISC AND OpenSSL"
 [[exception]]
 name = "unicode-ident"
 allow = ["Unicode-DFS-2016"]
+
+# attribute third-party code the crate graph can't see -- C sources vendored in
+# a -sys crate, a bundled font. Same accepted policy; url/copyright optional.
+[[extra]]
+name = "zlib (bundled in libz-sys)"
+expression = "Zlib"
+url = "https://zlib.net"
+copyright = "Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler"
+
+# local text for a license outside the SPDX corpus, named as LicenseRef-<id> in
+# `accepted`, a [[clarify]], or an [[extra]]; copied into the licenses folder.
+[[license-text]]
+id = "LicenseRef-weird"
+file = "licenses-extra/weird.txt"
 ```
 
 ## How a license is chosen
@@ -103,6 +118,8 @@ allow = ["Unicode-DFS-2016"]
 Each crate's SPDX expression is evaluated against `accepted` (which is also the OR preference order): for `A OR B` it picks the preferred accepted license, for `A AND B` it keeps both. Legacy `/`-separated expressions (`MIT/Apache-2.0`) are accepted. A crate whose expression cannot be satisfied from the accepted set is a hard error.
 
 An `accepted` entry can also be a pairing like `"GPL-2.0-only WITH Classpath-exception-2.0"`, which allows exactly that combination without accepting the bare license. A `[[exception]]` entry allows extra licenses for one named crate only; they lose the OR preference to globally accepted ones. When `accepted` is set explicitly, an entry that no dependency's expression references is warned about, so a stale allowlist stays visible.
+
+Code the crate graph can't see -- C sources vendored in a `-sys` crate, a bundled font -- can be attributed with an `[[extra]]` entry: its expression flows through the same accepted policy, and its licenses join `LICENSES/`, `THIRD-PARTY.md`, and the `--json` report. A license outside the SPDX corpus is named with a `LicenseRef-<id>` expression plus a `[[license-text]]` entry pointing at a local text file, which is copied into the licenses folder (and cleaned up, and `--check`ed) like a canonical text.
 
 Only normal (runtime) dependencies are attributed by default -- set `include-dev`/`include-build` to attribute (and gate) dev- and build-dependencies too. By default `cargo metadata` resolves the default feature set, so optional (feature-gated) dependencies are not attributed unless you enable them with `--features`/`--all-features`. Canonical license texts (and `WITH` exception texts) come from the [`spdx`](https://crates.io/crates/spdx) crate, so every SPDX license and exception is covered with no texts to hand-maintain.
 

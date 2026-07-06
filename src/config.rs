@@ -26,6 +26,9 @@ struct Config {
     notices_dir: Option<String>,
     clarify: Option<Vec<Clarify>>,
     exception: Option<Vec<Exception>>,
+    extra: Option<Vec<Extra>>,
+    #[serde(rename = "license-text")]
+    license_text: Option<Vec<LicenseText>>,
 }
 
 // override a crate's license when its `license` field is missing (crates that use
@@ -46,6 +49,26 @@ pub struct Exception {
     pub name: String,
     pub version: Option<String>,
     pub allow: Vec<String>,
+}
+
+// attribute third-party code the crate graph can't see (C sources vendored in a
+// -sys crate, a bundled font, ...); the expression flows through the same policy.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Extra {
+    pub name: String,
+    pub expression: String,
+    pub url: Option<String>,
+    pub copyright: Option<String>,
+}
+
+// a local text file for a license id outside the SPDX corpus (LicenseRef-<id>),
+// written into the licenses dir like a canonical text.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LicenseText {
+    pub id: String,
+    pub file: String,
 }
 
 // an accepted-list entry: a bare "MIT" allows the license with or without an
@@ -78,6 +101,8 @@ pub struct Settings {
     pub include_build: bool,
     pub clarify: Vec<Clarify>,
     pub exception: Vec<Exception>,
+    pub extra: Vec<Extra>,
+    pub license_text: Vec<LicenseText>,
     pub manifest: PathBuf,     // absolute output path
     pub manifest_link: String, // relative name, for messages
     pub licenses_dir: PathBuf, // absolute output dir
@@ -105,6 +130,11 @@ pub fn load_settings(root: &Utf8Path) -> Result<Settings, String> {
     relative_inside("manifest", &manifest_link)?;
     relative_inside("licenses-dir", &licenses_link)?;
     relative_inside("notices-dir", &notices_link)?;
+    // license-text files are only read, but keep them inside the project anyway so
+    // the output cannot depend on files outside the tree.
+    for t in cfg.license_text.as_deref().unwrap_or_default() {
+        relative_inside("license-text file", &t.file)?;
+    }
     let accepted_explicit = cfg.accepted.is_some();
     let accepted = cfg
         .accepted
@@ -119,6 +149,8 @@ pub fn load_settings(root: &Utf8Path) -> Result<Settings, String> {
         include_build: cfg.include_build.unwrap_or(false),
         clarify: cfg.clarify.unwrap_or_default(),
         exception: cfg.exception.unwrap_or_default(),
+        extra: cfg.extra.unwrap_or_default(),
+        license_text: cfg.license_text.unwrap_or_default(),
         manifest: root.join(&manifest_link).into(),
         licenses_dir: root.join(&licenses_link).into(),
         notices_dir: root.join(&notices_link).into(),
@@ -152,9 +184,10 @@ fn clarify_matches(c: &Clarify, name: &str, version: &Version) -> bool {
     policy_matches(&c.name, c.version.as_deref(), name, version)
 }
 
-// warn when a policy entry is not a known SPDX id.
+// warn when a policy entry is not a known SPDX id. a LicenseRef-* name is not in
+// the corpus by design (its text comes from [[license-text]]), so it never warns.
 pub fn warn_unknown_ids(kind: &str, a: &Accept) {
-    if spdx::license_id(&a.license).is_none() {
+    if !a.license.starts_with("LicenseRef-") && spdx::license_id(&a.license).is_none() {
         eprintln!("cargo-tribute: warning: {kind} license '{}' is not a known SPDX id", a.license);
     }
     if let Some(e) = &a.exception

@@ -10,6 +10,12 @@ pub fn canonical_text(id: &str) -> Option<&'static str> {
     spdx::license_id(id).map(|l| l.text()).or_else(|| spdx::exception_id(id).map(|e| e.text()))
 }
 
+// the leaf's license name: the SPDX id, or the raw `LicenseRef-...` form for a
+// license outside the corpus.
+pub fn license_name(req: &spdx::LicenseReq) -> String {
+    req.license.id().map_or_else(|| req.license.to_string(), |id| id.name.to_string())
+}
+
 // SPDX exception ids (from `A WITH exception`) attached to a license we actually chose, so
 // their text ships too. a WITH on a license the OR-pick dropped is not attributed.
 pub fn exceptions_for(expr: &spdx::Expression, chosen: &BTreeSet<String>) -> Vec<String> {
@@ -34,14 +40,10 @@ pub fn choose(expr: &spdx::Expression, accepted: &[Accept]) -> Option<BTreeSet<S
         match node {
             ExprNode::Req(req) => {
                 // a leaf is `license` or `license WITH exception`; see Accept::allows.
+                // a LicenseRef-* leaf matches accepted entries by its raw name.
                 let ex = req.req.addition.as_ref().and_then(|a| a.id()).map(|e| e.name);
-                let leaf = req
-                    .req
-                    .license
-                    .id()
-                    .map(|id| id.name)
-                    .filter(|n| accepted.iter().any(|a| a.allows(n, ex)))
-                    .map(|n| BTreeSet::from([n.to_string()]));
+                let name = license_name(&req.req);
+                let leaf = accepted.iter().any(|a| a.allows(&name, ex)).then(|| BTreeSet::from([name]));
                 stack.push(leaf);
             }
             ExprNode::Op(op) => {
@@ -156,6 +158,14 @@ mod tests {
         assert_eq!(pick_with(acc, "GPL-2.0-only WITH GCC-exception-2.0"), None); // nor another exception
         // preference still works: MIT (earlier) beats the pairing in an OR.
         assert_eq!(pick_with(acc, "(GPL-2.0-only WITH Classpath-exception-2.0) OR MIT"), Some(vec!["MIT".into()]));
+    }
+
+    #[test]
+    fn licenseref_matches_accepted_by_name() {
+        // a LicenseRef-* leaf is allowed only by an accepted entry with the exact raw name.
+        assert_eq!(pick_with(&["LicenseRef-weird"], "LicenseRef-weird"), Some(vec!["LicenseRef-weird".into()]));
+        assert_eq!(pick_with(&["MIT"], "LicenseRef-weird"), None);
+        assert_eq!(pick_with(&["MIT"], "MIT OR LicenseRef-weird"), Some(vec!["MIT".into()]));
     }
 
     #[test]

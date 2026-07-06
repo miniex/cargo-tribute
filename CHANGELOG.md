@@ -12,6 +12,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - An `accepted` entry can now be a `license WITH exception` pairing (e.g. `"GPL-2.0-only WITH Classpath-exception-2.0"`), accepting exactly that combination without accepting the bare license.
 - `include-dev` / `include-build` in tribute.toml attribute (and gate) dev- and build-dependencies too; both remain skipped by default.
 - A warning when an explicitly configured `accepted` entry is referenced by no dependency's expression, and when an `[[exception]]` entry matches no crate, so stale policy entries are visible.
+- `[[extra]]` in tribute.toml attributes third-party code the crate graph can't see (C sources vendored in a `-sys` crate, bundled assets): the entry's SPDX expression flows through the same accepted policy, and it joins `LICENSES/`, `THIRD-PARTY.md` (with optional `url` and `copyright`), and the `--json` report under `extras`.
+- `LicenseRef-<id>` expressions now work end to end: the id is matched against `accepted`/`allow` entries by name, and a `[[license-text]]` entry maps it to a local text file that is copied into the licenses folder, `--check`ed, and orphan-cleaned like a canonical text.
 
 ### Changed
 

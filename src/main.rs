@@ -9,10 +9,10 @@ mod output;
 mod policy;
 
 use cargo_metadata::{DependencyKind, MetadataCommand, Package, PackageId};
-use config::{Accept, clarify_expr, load_settings, parse_accept, policy_matches, warn_unknown_ids};
+use config::{Accept, Extra, clarify_expr, load_settings, parse_accept, policy_matches, warn_unknown_ids};
 use harvest::{Extras, harvest_extras};
-use output::{io, is_stale_license, is_stale_notice, render_json, render_manifest, stale_outputs};
-use policy::{canonical_text, choose, exceptions_for};
+use output::{Resolution, io, is_stale_license, is_stale_notice, render_json, render_manifest, stale_outputs};
+use policy::{canonical_text, choose, exceptions_for, license_name};
 use spdx::expression::ExprNode;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -53,6 +53,15 @@ CONFIG (tribute.toml in the project root, all optional):
     [[exception]]                                # allow extra licenses for one crate only
     name = \"unicode-ident\"
     allow = [\"Unicode-DFS-2016\"]
+
+    [[extra]]                                    # attribute non-crate code (vendored C, ...)
+    name = \"zlib (bundled in libz-sys)\"
+    expression = \"Zlib\"
+    url = \"https://zlib.net\"                   # optional, like copyright = \"...\"
+
+    [[license-text]]                             # local text for a LicenseRef-* id
+    id = \"LicenseRef-weird\"
+    file = \"licenses-extra/weird.txt\"
 ";
 
 fn main() -> ExitCode {
@@ -201,11 +210,9 @@ fn run(check: bool, json: bool, manifest_path: Option<String>, cargo_flags: Vec<
             }
         };
         for node in expr.iter() {
-            if let ExprNode::Req(r) = node
-                && let Some(lid) = r.req.license.id()
-            {
+            if let ExprNode::Req(r) = node {
                 let ex = r.req.addition.as_ref().and_then(|a| a.id()).map(|e| e.name.to_string());
-                encountered.insert((lid.name.to_string(), ex));
+                encountered.insert((license_name(&r.req), ex));
             }
         }
         // [[exception]] entries widen the accepted set for this crate only, appended
@@ -235,6 +242,37 @@ fn run(check: bool, json: bool, manifest_path: Option<String>, cargo_flags: Vec<
                 chosen_of.insert(*id, chosen);
             }
             None => failures.push(format!("{name}: license '{expr_str}' not in the accepted set")),
+        }
+    }
+    // [[extra]] entries attribute code the crate graph can't see (vendored C, bundled
+    // assets); the expression takes the same parse/choose path as a crate's.
+    let mut extra_by_license: BTreeMap<String, Vec<&Extra>> = BTreeMap::new();
+    let mut extra_chosen: Vec<(&Extra, BTreeSet<String>)> = Vec::new();
+    for x in &set.extra {
+        let expr = match spdx::Expression::parse_mode(&x.expression, spdx::ParseMode::LAX) {
+            Ok(e) => e,
+            Err(e) => {
+                failures.push(format!("[[extra]] {}: unparsable SPDX '{}' ({e})", x.name, x.expression));
+                continue;
+            }
+        };
+        for node in expr.iter() {
+            if let ExprNode::Req(r) = node {
+                let ex = r.req.addition.as_ref().and_then(|a| a.id()).map(|e| e.name.to_string());
+                encountered.insert((license_name(&r.req), ex));
+            }
+        }
+        match choose(&expr, &set.accepted) {
+            Some(chosen) => {
+                for ex in exceptions_for(&expr, &chosen) {
+                    used_exceptions.insert(ex);
+                }
+                for lic in &chosen {
+                    extra_by_license.entry(lic.clone()).or_default().push(x);
+                }
+                extra_chosen.push((x, chosen));
+            }
+            None => failures.push(format!("[[extra]] {}: license '{}' not in the accepted set", x.name, x.expression)),
         }
     }
     // warn on clarify/exception entries that matched no dependency, so a typo in name
@@ -282,17 +320,49 @@ fn run(check: bool, json: bool, manifest_path: Option<String>, cargo_flags: Vec<
         extras.insert(*id, x);
     }
 
-    // resolve each used license and exception id to its canonical text.
-    let mut texts: BTreeMap<&str, &'static str> = BTreeMap::new();
-    for id in by_license.keys().map(String::as_str).chain(used_exceptions.iter().map(String::as_str)) {
-        let text = canonical_text(id).ok_or_else(|| format!("no canonical text for SPDX id '{id}'"))?;
+    // texts for ids outside the SPDX corpus (LicenseRef-*), from [[license-text]].
+    // LF-normalize like a NOTICE, so a CRLF file can't read as stale in --check.
+    let mut custom: BTreeMap<&str, String> = BTreeMap::new();
+    for t in &set.license_text {
+        let p = meta.workspace_root.join(&t.file);
+        custom.insert(&t.id, io(p.as_std_path(), fs::read_to_string(&p))?.replace("\r\n", "\n"));
+    }
+    // resolve each used license and exception id to its text.
+    let mut texts: BTreeMap<&str, String> = BTreeMap::new();
+    for id in by_license
+        .keys()
+        .chain(extra_by_license.keys())
+        .map(String::as_str)
+        .chain(used_exceptions.iter().map(String::as_str))
+    {
+        let text = canonical_text(id)
+            .map(str::to_string)
+            .or_else(|| custom.get(id).cloned())
+            .ok_or_else(|| format!("no text for '{id}' (add a [[license-text]] entry to tribute.toml)"))?;
         texts.insert(id, text);
     }
+    // warn on license-text entries nothing uses, like the other policy no-match warnings.
+    for t in &set.license_text {
+        if !texts.contains_key(t.id.as_str()) {
+            eprintln!("cargo-tribute: warning: license-text for '{}' matched no dependency", t.id);
+        }
+    }
+    let res = Resolution {
+        deps: &deps,
+        pkg_of: &pkg_of,
+        effective: &effective,
+        chosen_of: &chosen_of,
+        by_license: &by_license,
+        extra_by_license: &extra_by_license,
+        extra_chosen: &extra_chosen,
+        used_exceptions: &used_exceptions,
+        extras: &extras,
+    };
     // --json is a read-only report of what the tree resolves to; it never writes or checks.
     if json {
-        return render_json(&deps, &pkg_of, &effective, &chosen_of, &by_license, &used_exceptions, &extras);
+        return render_json(&res);
     }
-    let manifest = render_manifest(&by_license, &effective, &extras, &set.licenses_link, &set.notices_link);
+    let manifest = render_manifest(&res, &set.licenses_link, &set.notices_link);
 
     if check {
         let stale = stale_outputs(&set.licenses_dir, &texts, &set.notices_dir, &notices, &set.manifest, &manifest);
@@ -300,7 +370,8 @@ fn run(check: bool, json: bool, manifest_path: Option<String>, cargo_flags: Vec<
             return Err(format!("out of date (run `cargo tribute`):\n  {}", stale.join("\n  ")));
         }
         let n = if notices.is_empty() { String::new() } else { format!(", {} notices", notices.len()) };
-        Ok(format!("up to date: {} license texts{n}, {} crates", texts.len(), deps.len()))
+        let e = if extra_chosen.is_empty() { String::new() } else { format!(", {} extras", extra_chosen.len()) };
+        Ok(format!("up to date: {} license texts{n}, {} crates{e}", texts.len(), deps.len()))
     } else {
         io(&set.licenses_dir, fs::create_dir_all(&set.licenses_dir))?;
         // drop license/exception texts cargo-tribute wrote that are no longer used; leave other files
@@ -345,8 +416,9 @@ fn run(check: bool, json: bool, manifest_path: Option<String>, cargo_flags: Vec<
         } else {
             format!(", {}/ ({} notices)", set.notices_link, notices.len())
         };
+        let e = if extra_chosen.is_empty() { String::new() } else { format!(", {} extras", extra_chosen.len()) };
         Ok(format!(
-            "wrote {}/ ({} license texts){n} and {} ({} crates)",
+            "wrote {}/ ({} license texts){n} and {} ({} crates{e})",
             set.licenses_link,
             texts.len(),
             set.manifest_link,

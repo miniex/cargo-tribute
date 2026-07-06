@@ -1,5 +1,6 @@
 //! render THIRD-PARTY.md and the JSON report, and detect stale outputs for --check.
 
+use crate::config::Extra;
 use crate::harvest::{Extras, display_author};
 use crate::policy::canonical_text;
 use cargo_metadata::semver::Version;
@@ -14,14 +15,15 @@ pub fn io<T>(path: &Path, r: std::io::Result<T>) -> Result<T, String> {
     r.map_err(|e| format!("{}: {e}", path.display()))
 }
 
-// a LICENSES/<id>.txt cargo-tribute could write (stem is an SPDX license or exception id)
-// that is no longer used. a .txt whose stem is not an SPDX id is hand-added and left alone.
-pub fn is_stale_license(path: &Path, texts: &BTreeMap<&str, &'static str>) -> bool {
+// a LICENSES/<id>.txt cargo-tribute could write that is no longer used: the stem is
+// an SPDX license/exception id, or a LicenseRef-* copied from [[license-text]]. a
+// .txt with any other stem is hand-added and left alone.
+pub fn is_stale_license(path: &Path, texts: &BTreeMap<&str, String>) -> bool {
     path.extension().is_some_and(|x| x == "txt")
         && path
             .file_stem()
             .and_then(|s| s.to_str())
-            .is_some_and(|s| canonical_text(s).is_some() && !texts.contains_key(s))
+            .is_some_and(|s| (canonical_text(s).is_some() || s.starts_with("LicenseRef-")) && !texts.contains_key(s))
 }
 
 // a NOTICES/<name>-<version>.txt cargo-tribute could write that is no longer used.
@@ -33,11 +35,25 @@ pub fn is_stale_notice(path: &Path, notices: &BTreeMap<String, String>) -> bool 
         })
 }
 
+// everything the resolve pass produced, in one place for the renderers.
+pub struct Resolution<'a> {
+    pub deps: &'a BTreeSet<&'a PackageId>,
+    pub pkg_of: &'a BTreeMap<&'a PackageId, &'a Package>,
+    pub effective: &'a BTreeMap<&'a PackageId, &'a str>,
+    pub chosen_of: &'a BTreeMap<&'a PackageId, BTreeSet<String>>,
+    pub by_license: &'a BTreeMap<String, Vec<&'a Package>>,
+    pub extra_by_license: &'a BTreeMap<String, Vec<&'a Extra>>,
+    pub extra_chosen: &'a [(&'a Extra, BTreeSet<String>)],
+    pub used_exceptions: &'a BTreeSet<String>,
+    pub extras: &'a BTreeMap<&'a PackageId, Extras>,
+}
+
 #[derive(Serialize)]
 struct Report<'a> {
     licenses: Vec<&'a str>,   // license ids used, with a text in the LICENSES dir
     exceptions: Vec<&'a str>, // WITH-exception ids used
     crates: Vec<CrateEntry<'a>>,
+    extras: Vec<ExtraEntry<'a>>, // [[extra]] entries, attributed like crates
 }
 
 #[derive(Serialize)]
@@ -51,26 +67,28 @@ struct CrateEntry<'a> {
     notice: Option<&'a str>,  // NOTICE body, when the crate ships one
 }
 
+#[derive(Serialize)]
+struct ExtraEntry<'a> {
+    name: &'a str,
+    expression: &'a str,
+    licenses: Vec<&'a str>, // ids this entry is attributed under
+    url: Option<&'a str>,
+    copyright: Option<&'a str>,
+}
+
 // the resolved attribution as JSON, for audit/pipeline use. read-only: no files touched.
-pub fn render_json(
-    deps: &BTreeSet<&PackageId>,
-    pkg_of: &BTreeMap<&PackageId, &Package>,
-    effective: &BTreeMap<&PackageId, &str>,
-    chosen_of: &BTreeMap<&PackageId, BTreeSet<String>>,
-    by_license: &BTreeMap<String, Vec<&Package>>,
-    used_exceptions: &BTreeSet<String>,
-    extras: &BTreeMap<&PackageId, Extras>,
-) -> Result<String, String> {
-    let crates: Vec<CrateEntry> = deps
+pub fn render_json(r: &Resolution) -> Result<String, String> {
+    let crates: Vec<CrateEntry> = r
+        .deps
         .iter()
         .filter_map(|id| {
-            let pkg = pkg_of.get(id).copied()?;
-            let chosen = chosen_of.get(*id)?;
-            let x = extras.get(*id);
+            let pkg = r.pkg_of.get(id).copied()?;
+            let chosen = r.chosen_of.get(*id)?;
+            let x = r.extras.get(*id);
             Some(CrateEntry {
                 name: pkg.name.as_ref(),
                 version: pkg.version.to_string(),
-                expression: effective.get(*id).copied().unwrap_or(""),
+                expression: r.effective.get(*id).copied().unwrap_or(""),
                 licenses: chosen.iter().map(String::as_str).collect(),
                 authors: x.map(|x| x.authors.as_slice()).unwrap_or(&[]),
                 copyrights: x.map(|x| x.copyrights.as_slice()).unwrap_or(&[]),
@@ -79,9 +97,28 @@ pub fn render_json(
         })
         .collect();
     let report = Report {
-        licenses: by_license.keys().map(String::as_str).collect(),
-        exceptions: used_exceptions.iter().map(String::as_str).collect(),
+        // crate licenses and [[extra]] licenses alike; BTreeSet dedups and sorts.
+        licenses: r
+            .by_license
+            .keys()
+            .chain(r.extra_by_license.keys())
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect(),
+        exceptions: r.used_exceptions.iter().map(String::as_str).collect(),
         crates,
+        extras: r
+            .extra_chosen
+            .iter()
+            .map(|(x, chosen)| ExtraEntry {
+                name: &x.name,
+                expression: &x.expression,
+                licenses: chosen.iter().map(String::as_str).collect(),
+                url: x.url.as_deref(),
+                copyright: x.copyright.as_deref(),
+            })
+            .collect(),
     };
     serde_json::to_string_pretty(&report).map_err(|e| e.to_string())
 }
@@ -98,7 +135,7 @@ fn matches_output(disk: Option<String>, want: &str) -> bool {
 // pass while stale files still sit in the tree.
 pub fn stale_outputs(
     licenses_dir: &Path,
-    texts: &BTreeMap<&str, &'static str>,
+    texts: &BTreeMap<&str, String>,
     notices_dir: &Path,
     notices: &BTreeMap<String, String>,
     manifest_path: &Path,
@@ -139,13 +176,7 @@ pub fn stale_outputs(
     stale
 }
 
-pub fn render_manifest(
-    by_license: &BTreeMap<String, Vec<&Package>>,
-    effective: &BTreeMap<&PackageId, &str>,
-    extras: &BTreeMap<&PackageId, Extras>,
-    licenses_dir: &str,
-    notices_dir: &str,
-) -> String {
+pub fn render_manifest(r: &Resolution, licenses_dir: &str, notices_dir: &str) -> String {
     let mut out = String::from(
         "# Third-party licenses\n\nDependencies linked into this crate, grouped by license; full texts are in \
          [`",
@@ -155,12 +186,14 @@ pub fn render_manifest(
     out.push_str(licenses_dir);
     out.push(')');
     // mention the notices folder only when this tree ships one.
-    if extras.values().any(|x| x.notice.is_some()) {
+    if r.extras.values().any(|x| x.notice.is_some()) {
         out.push_str(&format!(", NOTICE files shipped by dependencies in [`{notices_dir}/`]({notices_dir})"));
     }
     out.push_str(". Generated by `cargo tribute`; do not edit.\n\n");
-    for (id, pkgs) in by_license {
-        let mut ps: Vec<&Package> = pkgs.clone();
+    // sections cover crate licenses and [[extra]] licenses alike.
+    let ids: BTreeSet<&String> = r.by_license.keys().chain(r.extra_by_license.keys()).collect();
+    for id in ids {
+        let mut ps: Vec<&Package> = r.by_license.get(id).cloned().unwrap_or_default();
         ps.sort_by(|a, b| (&*a.name, &a.version).cmp(&(&*b.name, &b.version)));
         ps.dedup_by(|a, b| a.id == b.id);
         out.push_str(&format!("## {id}\n\nText: [`{licenses_dir}/{id}.txt`]({licenses_dir}/{id}.txt)\n\n"));
@@ -170,10 +203,10 @@ pub fn render_manifest(
             // show the effective SPDX (clarified or declared) when it differs from the
             // section license, so WITH exceptions and dual-license picks are not hidden by
             // the grouping. the exception's own text is written to the licenses dir too.
-            if let Some(expr) = effective.get(&p.id).copied().filter(|e| *e != id.as_str()) {
+            if let Some(expr) = r.effective.get(&p.id).copied().filter(|e| *e != id.as_str()) {
                 out.push_str(&format!(" -- `{expr}`"));
             }
-            if let Some(x) = extras.get(&p.id) {
+            if let Some(x) = r.extras.get(&p.id) {
                 // the crate's holders; MIT/BSD want the copyright notice itself reproduced.
                 if !x.copyrights.is_empty() {
                     out.push_str(&format!(" -- {}", x.copyrights.join("; ")));
@@ -194,6 +227,20 @@ pub fn render_manifest(
             }
             out.push('\n');
         }
+        // [[extra]] entries attributed under this license, after the crates.
+        for x in r.extra_by_license.get(id).into_iter().flatten() {
+            match &x.url {
+                Some(u) => out.push_str(&format!("- [{}]({u})", x.name)),
+                None => out.push_str(&format!("- {}", x.name)),
+            }
+            if x.expression != *id {
+                out.push_str(&format!(" -- `{}`", x.expression));
+            }
+            if let Some(c) = &x.copyright {
+                out.push_str(&format!(" -- {c}"));
+            }
+            out.push('\n');
+        }
         out.push('\n');
     }
     out
@@ -211,8 +258,8 @@ mod tests {
         fs::create_dir_all(&lic).unwrap();
         fs::create_dir_all(&not).unwrap();
         let manifest_path = dir.join("THIRD-PARTY.md");
-        let mut texts: BTreeMap<&str, &'static str> = BTreeMap::new();
-        texts.insert("MIT", "MIT TEXT");
+        let mut texts: BTreeMap<&str, String> = BTreeMap::new();
+        texts.insert("MIT", "MIT TEXT".into());
         let mut notices: BTreeMap<String, String> = BTreeMap::new();
         notices.insert("dep-1.0.0".into(), "DEP NOTICE".into());
 
@@ -238,6 +285,12 @@ mod tests {
         fs::write(lic.join("NOTICE.txt"), "x").unwrap();
         let stale = stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST");
         assert!(!stale.iter().any(|s| s.contains("NOTICE.txt")));
+
+        // an unused LicenseRef-* text is ours (copied from [[license-text]]) -> stale.
+        fs::write(lic.join("LicenseRef-old.txt"), "x").unwrap();
+        let stale = stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST");
+        assert!(stale.iter().any(|s| s.contains("LicenseRef-old.txt")));
+        fs::remove_file(lic.join("LicenseRef-old.txt")).unwrap();
 
         // a leftover notice for a dep no longer in the tree is stale (we wrote it),
         // but a hand-added file without a "-<semver>" stem suffix is left alone.

@@ -151,6 +151,60 @@ fn include_dev_and_build_deps_opt_in() {
 }
 
 #[test]
+fn extra_and_licenseref_are_attributed() {
+    // `dep` declares a LicenseRef license whose text comes from [[license-text]];
+    // an [[extra]] entry attributes vendored non-crate code under Zlib.
+    let dir = std::env::temp_dir().join(format!("tribute-extra-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    write(
+        &dir.join("dep/Cargo.toml"),
+        "[package]\nname = \"dep\"\nversion = \"1.0.0\"\nedition = \"2021\"\nlicense = \"LicenseRef-weird\"\n",
+    );
+    write(&dir.join("dep/src/lib.rs"), "");
+    write(
+        &dir.join("app/Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\ndep = { path = \"../dep\" }\n",
+    );
+    write(&dir.join("app/src/main.rs"), "fn main() {}\n");
+    write(&dir.join("app/weird-license.txt"), "the weird license text\n");
+    write(
+        &dir.join("app/tribute.toml"),
+        "accepted = [\"MIT\", \"Zlib\", \"LicenseRef-weird\"]\n\n\
+         [[extra]]\nname = \"zlib (vendored)\"\nexpression = \"Zlib\"\nurl = \"https://zlib.net\"\n\
+         copyright = \"Copyright (C) 1995 Jean-loup Gailly\"\n\n\
+         [[license-text]]\nid = \"LicenseRef-weird\"\nfile = \"weird-license.txt\"\n",
+    );
+    let manifest_path = dir.join("app/Cargo.toml");
+
+    let out = tribute(&manifest_path, &[]);
+    assert!(out.status.success(), "run failed: {}", String::from_utf8_lossy(&out.stderr));
+    let manifest = fs::read_to_string(dir.join("app/THIRD-PARTY.md")).unwrap();
+    assert!(manifest.contains("## LicenseRef-weird"), "manifest:\n{manifest}");
+    assert!(manifest.contains("dep 1.0.0"), "manifest:\n{manifest}");
+    assert!(manifest.contains("## Zlib"), "manifest:\n{manifest}");
+    assert!(manifest.contains("[zlib (vendored)](https://zlib.net)"), "manifest:\n{manifest}");
+    assert!(manifest.contains("Copyright (C) 1995 Jean-loup Gailly"), "manifest:\n{manifest}");
+    let text = fs::read_to_string(dir.join("app/LICENSES/LicenseRef-weird.txt")).unwrap();
+    assert_eq!(text, "the weird license text\n");
+    assert!(dir.join("app/LICENSES/Zlib.txt").exists());
+
+    // MIT is accepted but unreferenced -> warns; Zlib counts as used via the
+    // [[extra]], and a LicenseRef never triggers the unknown-SPDX-id warning.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("accepted license 'MIT' matched no dependency"), "stderr:\n{stderr}");
+    assert!(!stderr.contains("'Zlib' matched no dependency"), "extra must count as use:\n{stderr}");
+    assert!(!stderr.contains("LicenseRef-weird' matched no dependency"), "stderr:\n{stderr}");
+    assert!(!stderr.contains("is not a known SPDX id"), "LicenseRef must not warn:\n{stderr}");
+
+    // --check roundtrips; tampering the copied LicenseRef text makes it fail.
+    assert!(tribute(&manifest_path, &["--check"]).status.success(), "check should pass after write");
+    fs::write(dir.join("app/LICENSES/LicenseRef-weird.txt"), "stale\n").unwrap();
+    assert!(!tribute(&manifest_path, &["--check"]).status.success(), "check should fail on stale text");
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn unused_accepted_entry_warns() {
     // an explicit accepted list with an entry no dependency references warns; the
     // used entry does not.
