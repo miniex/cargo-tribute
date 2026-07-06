@@ -12,6 +12,7 @@ Text: [`LICENSES/Apache-2.0.txt`](LICENSES/Apache-2.0.txt)
 
 Text: [`LICENSES/MIT.txt`](LICENSES/MIT.txt)
 
+- [aho-corasick 1.1.4](https://github.com/BurntSushi/aho-corasick) -- `Unlicense OR MIT` -- Copyright (c) 2015 Andrew Gallant
 - [camino 1.2.4](https://github.com/camino-rs/camino) -- `MIT OR Apache-2.0` -- by Without Boats, Ashley Williams, Steve Klabnik, Rain
 - [cargo-platform 0.3.3](https://github.com/rust-lang/cargo) -- `MIT OR Apache-2.0`
 - [cargo_metadata 0.23.1](https://github.com/oli-obk/cargo_metadata) -- by Oliver Schneider
@@ -22,6 +23,9 @@ Text: [`LICENSES/MIT.txt`](LICENSES/MIT.txt)
 - [memchr 2.8.2](https://github.com/BurntSushi/memchr) -- `Unlicense OR MIT` -- Copyright (c) 2015 Andrew Gallant
 - [proc-macro2 1.0.106](https://github.com/dtolnay/proc-macro2) -- `MIT OR Apache-2.0` -- by David Tolnay, Alex Crichton
 - [quote 1.0.46](https://github.com/dtolnay/quote) -- `MIT OR Apache-2.0` -- by David Tolnay
+- [regex 1.12.4](https://github.com/rust-lang/regex) -- `MIT OR Apache-2.0` -- Copyright (c) 2014 The Rust Project Developers
+- [regex-automata 0.4.14](https://github.com/rust-lang/regex) -- `MIT OR Apache-2.0` -- Copyright (c) 2014 The Rust Project Developers
+- [regex-syntax 0.8.11](https://github.com/rust-lang/regex) -- `MIT OR Apache-2.0` -- Copyright (c) 2014 The Rust Project Developers
 - [semver 1.0.28](https://github.com/dtolnay/semver) -- `MIT OR Apache-2.0` -- by David Tolnay
 - [serde 1.0.228](https://github.com/serde-rs/serde) -- `MIT OR Apache-2.0` -- by Erick Tryzelaar, David Tolnay
 - [serde_core 1.0.228](https://github.com/serde-rs/serde) -- `MIT OR Apache-2.0` -- by Erick Tryzelaar, David Tolnay
@@ -32,11 +36,14 @@ Text: [`LICENSES/MIT.txt`](LICENSES/MIT.txt)
 - [syn 2.0.118](https://github.com/dtolnay/syn) -- `MIT OR Apache-2.0` -- by David Tolnay
 - [thiserror 2.0.18](https://github.com/dtolnay/thiserror) -- `MIT OR Apache-2.0` -- by David Tolnay
 - [thiserror-impl 2.0.18](https://github.com/dtolnay/thiserror) -- `MIT OR Apache-2.0` -- by David Tolnay
+- [tinyvec 1.11.0](https://github.com/Lokathor/tinyvec) -- `Zlib OR Apache-2.0 OR MIT` -- Copyright (c) 2019 Daniel "Lokathor" Gee.
+- [tinyvec_macros 0.1.1](https://github.com/Soveu/tinyvec_macros) -- `MIT OR Apache-2.0 OR Zlib` -- Copyright (c) 2020 Soveu; Copyright 2020 Tomasz "Soveu" Marx
 - [toml 1.1.2+spec-1.1.0](https://github.com/toml-rs/toml) -- `MIT OR Apache-2.0` -- Copyright (c) Individual contributors
 - [toml_datetime 1.1.1+spec-1.1.0](https://github.com/toml-rs/toml) -- `MIT OR Apache-2.0` -- Copyright (c) Individual contributors
 - [toml_parser 1.1.2+spec-1.1.0](https://github.com/toml-rs/toml) -- `MIT OR Apache-2.0` -- Copyright (c) Individual contributors
 - [toml_writer 1.1.1+spec-1.1.0](https://github.com/toml-rs/toml) -- `MIT OR Apache-2.0` -- Copyright (c) Individual contributors
 - [unicode-ident 1.0.24](https://github.com/dtolnay/unicode-ident) -- `(MIT OR Apache-2.0) AND Unicode-3.0` -- Copyright © 1991-2023 Unicode, Inc.
+- [unicode-normalization 0.1.25](https://github.com/unicode-rs/unicode-normalization) -- `MIT OR Apache-2.0` -- Copyright (c) 2015 The Rust Project Developers
 - [winnow 1.0.3](https://github.com/winnow-rs/winnow)
 - [zmij 1.0.21](https://github.com/dtolnay/zmij) -- by David Tolnay
 

@@ -28,6 +28,7 @@ License and exception texts come from the `spdx` crate, so there are no text fil
 - `src/policy.rs` -- SPDX expression evaluation against the accepted set
 - `src/harvest.rs` -- copyright lines and NOTICE bodies from the crate sources
 - `src/output.rs` -- rendering (THIRD-PARTY.md, json, text, cyclonedx) and the `--check` staleness scan
+- `src/audit.rs` -- `--audit`: declared licenses vs the license files crates ship
 
 Unit tests live in each module's `tests` submodule; the end-to-end tests in `tests/cli.rs`.
 

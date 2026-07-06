@@ -3,13 +3,14 @@
 //! attribution manifest with copyright lines. `--check` verifies the output is current
 //! and every license is accepted, without writing anything.
 
+mod audit;
 mod config;
 mod harvest;
 mod output;
 mod policy;
 
-use cargo_metadata::{DependencyKind, MetadataCommand, Package, PackageId};
-use config::{Accept, Extra, clarify_expr, load_settings, parse_accept, policy_matches, warn_unknown_ids};
+use cargo_metadata::{DependencyKind, MetadataCommand, Package, PackageId, TargetKind};
+use config::{Accept, Extra, apply_deny, clarify_expr, load_settings, parse_accept, policy_matches, warn_unknown_ids};
 use harvest::{Extras, harvest_extras};
 use output::{
     Resolution, io, is_stale_license, is_stale_notice, render_cyclonedx, render_json, render_manifest, render_text,
@@ -19,7 +20,7 @@ use policy::{canonical_text, choose, exceptions_for, license_name};
 use spdx::expression::ExprNode;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const HELP: &str = "\
@@ -27,9 +28,16 @@ cargo-tribute -- REUSE-style third-party license attribution from a Cargo tree
 
 USAGE:
     cargo tribute [OPTIONS]
+    cargo tribute init       scaffold a commented tribute.toml at the workspace root
 
 OPTIONS:
-        --check              verify the output is current; do not write (exit 1 if stale)
+        --check              verify the output is current; do not write (exit 2 if stale)
+        --audit              compare declared licenses against the license files the
+                             crates actually ship (advisory report; never fails)
+    -p, --package <NAME>     attribute only this workspace member's dependencies
+                             (repeatable; default: all members)
+        --from-deny <PATH>   take the accepted list and per-crate exceptions from a
+                             cargo-deny deny.toml [licenses] section
         --manifest-path <P>  path to Cargo.toml (default: auto-detect from the cwd)
         --locked             forwarded to `cargo metadata` (also --offline, --frozen)
         --features <F>       forwarded to `cargo metadata`, to attribute feature-gated
@@ -40,14 +48,20 @@ OPTIONS:
                              files: json, text (flat list + full texts, for an
                              \"open source licenses\" screen), or cyclonedx
                              (CycloneDX 1.6 SBOM carrying the license texts)
+    -q, --quiet              suppress the success summary
     -h, --help               print this help
     -V, --version            print version
+
+EXIT CODES:
+    1 license policy failed, 2 output out of date (--check), 3 anything else
 
 CONFIG (tribute.toml in the project root, all optional):
     accepted = [\"MIT\", \"Apache-2.0\", ...]    # allowed licenses, or \"A WITH B\" pairings;
                                              # also the OR preference order
     include-dev = false                      # also attribute dev-dependencies
     include-build = false                    # also attribute build-dependencies
+    skip-private = false                     # skip path/git/non-crates.io dependencies
+    skip-proc-macros = false                 # skip proc-macro crates (compile-time only)
     manifest = \"THIRD-PARTY.md\"              # attribution manifest path
     licenses-dir = \"LICENSES\"                # folder for the canonical license texts
     notices-dir = \"NOTICES\"                  # folder for NOTICE files shipped by dependencies
@@ -78,25 +92,73 @@ enum Format {
     CycloneDx,
 }
 
+// what run() produced: a report always goes to stdout, a summary only without -q.
+enum Output {
+    Report(String),
+    Summary(String),
+}
+
+// failure kinds map to distinct exit codes, so CI can branch on them.
+enum Failure {
+    Policy(String), // 1: a dependency's license is not accepted
+    Stale(String),  // 2: --check found the committed output out of date
+    Other(String),  // 3: io/config/metadata errors
+}
+
+impl From<String> for Failure {
+    fn from(s: String) -> Self {
+        Failure::Other(s)
+    }
+}
+
+impl From<&str> for Failure {
+    fn from(s: &str) -> Self {
+        Failure::Other(s.into())
+    }
+}
+
+// the parsed command line.
+struct Cli {
+    check: bool,
+    quiet: bool,
+    init: bool,
+    audit: bool,
+    format: Option<Format>,
+    packages: Vec<String>,
+    from_deny: Option<String>,
+    manifest_path: Option<String>,
+    cargo_flags: Vec<String>,
+}
+
 fn main() -> ExitCode {
-    let mut check = false;
-    let mut format = None;
-    let mut manifest_path = None;
-    // flags forwarded verbatim to `cargo metadata`, e.g. --locked/--offline/--frozen
-    // so a CI --check resolves deterministically and offline.
-    let mut cargo_flags: Vec<String> = Vec::new();
+    let mut cli = Cli {
+        check: false,
+        quiet: false,
+        init: false,
+        audit: false,
+        format: None,
+        packages: Vec::new(),
+        from_deny: None,
+        manifest_path: None,
+        // flags forwarded verbatim to `cargo metadata`, e.g. --locked/--offline/--frozen
+        // so a CI --check resolves deterministically and offline.
+        cargo_flags: Vec::new(),
+    };
     let mut args = std::env::args().skip(1).peekable();
     if args.peek().map(String::as_str) == Some("tribute") {
         args.next(); // cargo passes the subcommand name when invoked as `cargo tribute`
     }
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--check" => check = true,
-            "--json" => format = Some(Format::Json),
+            "init" => cli.init = true,
+            "--check" => cli.check = true,
+            "--audit" => cli.audit = true,
+            "-q" | "--quiet" => cli.quiet = true,
+            "--json" => cli.format = Some(Format::Json),
             "--format" => match args.next().as_deref() {
-                Some("json") => format = Some(Format::Json),
-                Some("text") => format = Some(Format::Text),
-                Some("cyclonedx") => format = Some(Format::CycloneDx),
+                Some("json") => cli.format = Some(Format::Json),
+                Some("text") => cli.format = Some(Format::Text),
+                Some("cyclonedx") => cli.format = Some(Format::CycloneDx),
                 Some(v) => {
                     eprintln!("cargo-tribute: unknown format '{v}' (expected json, text, or cyclonedx)");
                     return ExitCode::FAILURE;
@@ -106,17 +168,33 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             },
+            "-p" | "--package" => match args.next() {
+                Some(p) => cli.packages.push(p),
+                None => {
+                    eprintln!("cargo-tribute: {a} needs a value");
+                    return ExitCode::FAILURE;
+                }
+            },
+            "--from-deny" => match args.next() {
+                Some(p) => cli.from_deny = Some(p),
+                None => {
+                    eprintln!("cargo-tribute: --from-deny needs a value");
+                    return ExitCode::FAILURE;
+                }
+            },
             "--manifest-path" => match args.next() {
-                Some(p) => manifest_path = Some(p),
+                Some(p) => cli.manifest_path = Some(p),
                 None => {
                     eprintln!("cargo-tribute: --manifest-path needs a value");
                     return ExitCode::FAILURE;
                 }
             },
-            "--locked" | "--offline" | "--frozen" | "--all-features" | "--no-default-features" => cargo_flags.push(a),
+            "--locked" | "--offline" | "--frozen" | "--all-features" | "--no-default-features" => {
+                cli.cargo_flags.push(a)
+            }
             // value-taking passthroughs; forward the flag and its value verbatim.
             "--features" | "--filter-platform" => match args.next() {
-                Some(v) => cargo_flags.extend([a, v]),
+                Some(v) => cli.cargo_flags.extend([a, v]),
                 None => {
                     eprintln!("cargo-tribute: {a} needs a value");
                     return ExitCode::FAILURE;
@@ -131,40 +209,106 @@ fn main() -> ExitCode {
                 return ExitCode::SUCCESS;
             }
             // accept the `--features=foo`/`--filter-platform=foo` spellings cargo also takes.
-            _ if a.starts_with("--features=") || a.starts_with("--filter-platform=") => cargo_flags.push(a),
+            _ if a.starts_with("--features=") || a.starts_with("--filter-platform=") => cli.cargo_flags.push(a),
             other => {
                 eprintln!("cargo-tribute: unknown argument '{other}' (try --help)");
                 return ExitCode::FAILURE;
             }
         }
     }
-    match run(check, format, manifest_path, cargo_flags) {
-        Ok(msg) => {
-            println!("{msg}");
+    let quiet = cli.quiet;
+    match run(cli) {
+        Ok(Output::Report(s)) => {
+            println!("{s}");
             ExitCode::SUCCESS
         }
-        Err(e) => {
-            eprintln!("cargo-tribute: {e}");
-            ExitCode::FAILURE
+        Ok(Output::Summary(s)) => {
+            if !quiet {
+                println!("{s}");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(f) => {
+            let (msg, code) = match f {
+                Failure::Policy(m) => (m, 1),
+                Failure::Stale(m) => (m, 2),
+                Failure::Other(m) => (m, 3),
+            };
+            eprintln!("cargo-tribute: {msg}");
+            ExitCode::from(code)
         }
     }
 }
 
-fn run(
-    check: bool,
-    format: Option<Format>,
-    manifest_path: Option<String>,
-    cargo_flags: Vec<String>,
-) -> Result<String, String> {
+// scaffold a commented tribute.toml at the workspace root; refuses to overwrite.
+fn run_init(manifest_path: Option<String>) -> Result<Output, Failure> {
     let mut cmd = MetadataCommand::new();
     if let Some(p) = manifest_path {
         cmd.manifest_path(PathBuf::from(p));
     }
-    if !cargo_flags.is_empty() {
-        cmd.other_options(cargo_flags);
+    let meta = cmd.exec().map_err(|e| e.to_string())?;
+    let path = meta.workspace_root.join("tribute.toml");
+    if path.as_std_path().exists() {
+        return Err(Failure::Other(format!("{path} already exists")));
+    }
+    io(path.as_std_path(), fs::write(&path, INIT_TEMPLATE))?;
+    Ok(Output::Summary(format!("wrote {path}; uncomment what you need (CI: cargo tribute --locked --check)")))
+}
+
+const INIT_TEMPLATE: &str = "\
+# cargo-tribute configuration; every field is optional, these are the defaults.
+
+# allowed licenses, also the OR preference order; \"A WITH B\" pairings work too.
+# accepted = [\"MIT\", \"Apache-2.0\", \"BSD-2-Clause\", \"BSD-3-Clause\", \"ISC\", \"0BSD\", \"Zlib\", \"Unlicense\", \"Unicode-3.0\"]
+
+# include-dev = false           # also attribute dev-dependencies
+# include-build = false         # also attribute build-dependencies
+# skip-private = false          # skip path/git/non-crates.io dependencies
+# skip-proc-macros = false      # skip proc-macro crates (compile-time only)
+# manifest = \"THIRD-PARTY.md\"
+# licenses-dir = \"LICENSES\"
+# notices-dir = \"NOTICES\"
+
+# override a crate's license (missing/wrong/non-SPDX):
+# [[clarify]]
+# name = \"ring\"
+# version = \"0.17.8\"
+# expression = \"MIT AND ISC AND OpenSSL\"
+
+# allow extra licenses for one crate only:
+# [[exception]]
+# name = \"unicode-ident\"
+# allow = [\"Unicode-DFS-2016\"]
+
+# attribute non-crate code (vendored C, bundled assets):
+# [[extra]]
+# name = \"zlib (bundled in libz-sys)\"
+# expression = \"Zlib\"
+# url = \"https://zlib.net\"
+
+# local text for a LicenseRef-* id:
+# [[license-text]]
+# id = \"LicenseRef-weird\"
+# file = \"licenses-extra/weird.txt\"
+";
+
+fn run(cli: Cli) -> Result<Output, Failure> {
+    if cli.init {
+        return run_init(cli.manifest_path);
+    }
+    let mut cmd = MetadataCommand::new();
+    if let Some(p) = &cli.manifest_path {
+        cmd.manifest_path(PathBuf::from(p));
+    }
+    if !cli.cargo_flags.is_empty() {
+        cmd.other_options(cli.cargo_flags.clone());
     }
     let meta = cmd.exec().map_err(|e| e.to_string())?;
-    let set = load_settings(&meta.workspace_root)?;
+    let mut set = load_settings(&meta.workspace_root)?;
+    if let Some(p) = &cli.from_deny {
+        apply_deny(&mut set, Path::new(p))?;
+    }
+    let set = set;
     // a typo in a policy entry (e.g. "Apache2.0") would silently reject that license; flag it.
     for a in &set.accepted {
         warn_unknown_ids("accepted", a);
@@ -180,10 +324,28 @@ fn run(
     let pkg_of: BTreeMap<&PackageId, &Package> = meta.packages.iter().map(|p| (&p.id, p)).collect();
     let workspace: BTreeSet<&PackageId> = meta.workspace_members.iter().collect();
 
-    // dependency closure of the workspace members, minus the members themselves.
+    // closure roots: all workspace members, or just the ones named with -p.
+    let mut stack: Vec<&PackageId> = if cli.packages.is_empty() {
+        meta.workspace_members.iter().collect()
+    } else {
+        let mut roots = Vec::new();
+        for want in &cli.packages {
+            let matched: Vec<&PackageId> = meta
+                .workspace_members
+                .iter()
+                .filter(|id| pkg_of.get(id).is_some_and(|p| p.name.as_ref() == want.as_str()))
+                .collect();
+            if matched.is_empty() {
+                return Err(Failure::Other(format!("-p '{want}' matches no workspace member")));
+            }
+            roots.extend(matched);
+        }
+        roots
+    };
+
+    // dependency closure of the roots, minus the workspace members themselves.
     // normal deps always; dev and build deps only when opted in via tribute.toml.
     let mut seen = BTreeSet::new();
-    let mut stack: Vec<&PackageId> = meta.workspace_members.iter().collect();
     let mut deps = BTreeSet::new();
     while let Some(id) = stack.pop() {
         if !seen.insert(id) {
@@ -200,7 +362,18 @@ fn run(
             if !wanted {
                 continue;
             }
-            if !workspace.contains(&dep.pkg) {
+            let pkg = pkg_of.get(&dep.pkg);
+            // a skipped proc-macro takes its compile-time subtree with it; anything
+            // also reachable at runtime stays via its other path.
+            if set.skip_proc_macros
+                && pkg.is_some_and(|p| p.targets.iter().any(|t| t.kind.contains(&TargetKind::ProcMacro)))
+            {
+                continue;
+            }
+            // a private (path/git/alt-registry) dep is first-party: not attributed,
+            // but still walked, since its crates.io deps do ship.
+            let private = set.skip_private && pkg.is_some_and(|p| !p.source.as_ref().is_some_and(|s| s.is_crates_io()));
+            if !workspace.contains(&dep.pkg) && !private {
                 deps.insert(&dep.pkg);
             }
             stack.push(&dep.pkg);
@@ -336,8 +509,14 @@ fn run(
         }
     }
 
+    // --audit reports declared-vs-shipped mismatches and deliberately ignores the
+    // policy gate: it is about what the crates carry, not what we accept.
+    if cli.audit {
+        return Ok(Output::Report(audit::run_audit(&deps, &pkg_of, &effective)));
+    }
+
     if !failures.is_empty() {
-        return Err(format!("license policy failed:\n  {}", failures.join("\n  ")));
+        return Err(Failure::Policy(format!("license policy failed:\n  {}", failures.join("\n  "))));
     }
 
     // per-crate copyright lines and NOTICE bodies, from the local sources.
@@ -392,23 +571,23 @@ fn run(
     };
     // --format/--json is a read-only report of what the tree resolves to; it never
     // writes or checks.
-    if let Some(f) = format {
+    if let Some(f) = cli.format {
         return match f {
-            Format::Json => render_json(&res),
-            Format::Text => Ok(render_text(&res, &texts)),
-            Format::CycloneDx => render_cyclonedx(&res, &texts),
+            Format::Json => Ok(Output::Report(render_json(&res)?)),
+            Format::Text => Ok(Output::Report(render_text(&res, &texts))),
+            Format::CycloneDx => Ok(Output::Report(render_cyclonedx(&res, &texts)?)),
         };
     }
     let manifest = render_manifest(&res, &set.licenses_link, &set.notices_link);
 
-    if check {
+    if cli.check {
         let stale = stale_outputs(&set.licenses_dir, &texts, &set.notices_dir, &notices, &set.manifest, &manifest);
         if !stale.is_empty() {
-            return Err(format!("out of date (run `cargo tribute`):\n  {}", stale.join("\n  ")));
+            return Err(Failure::Stale(format!("out of date (run `cargo tribute`):\n  {}", stale.join("\n  "))));
         }
         let n = if notices.is_empty() { String::new() } else { format!(", {} notices", notices.len()) };
         let e = if extra_chosen.is_empty() { String::new() } else { format!(", {} extras", extra_chosen.len()) };
-        Ok(format!("up to date: {} license texts{n}, {} crates{e}", texts.len(), deps.len()))
+        Ok(Output::Summary(format!("up to date: {} license texts{n}, {} crates{e}", texts.len(), deps.len())))
     } else {
         io(&set.licenses_dir, fs::create_dir_all(&set.licenses_dir))?;
         // drop license/exception texts cargo-tribute wrote that are no longer used; leave other files
@@ -454,12 +633,12 @@ fn run(
             format!(", {}/ ({} notices)", set.notices_link, notices.len())
         };
         let e = if extra_chosen.is_empty() { String::new() } else { format!(", {} extras", extra_chosen.len()) };
-        Ok(format!(
+        Ok(Output::Summary(format!(
             "wrote {}/ ({} license texts){n} and {} ({} crates{e})",
             set.licenses_link,
             texts.len(),
             set.manifest_link,
             deps.len()
-        ))
+        )))
     }
 }

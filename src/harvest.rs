@@ -12,12 +12,12 @@ pub struct Extras {
     pub notice: Option<String>,  // NOTICE file contents, LF-normalized
 }
 
-// scan the crate root (already local in cargo's registry cache, so still offline).
-// best-effort: an unreadable or huge file is skipped, extras never gate.
-pub fn harvest_extras(pkg: &Package) -> Extras {
+// the license/notice files in the crate root (already local in cargo's registry
+// cache, so still offline), LF-normalized. best-effort: an unreadable or huge file
+// is skipped, extras never gate.
+pub fn attribution_files(pkg: &Package) -> Vec<(String, String, bool)> {
     const MAX_LEN: u64 = 1_000_000;
-    let mut copyrights = BTreeSet::new();
-    let mut notice_parts: Vec<String> = Vec::new();
+    let mut files = Vec::new();
     if let Some(dir) = pkg.manifest_path.parent() {
         let mut names: Vec<String> = fs::read_dir(dir)
             .into_iter()
@@ -41,11 +41,19 @@ pub fn harvest_extras(pkg: &Package) -> Extras {
             }
             let Ok(bytes) = fs::read(&path) else { continue };
             // LF-normalize now, so a CRLF NOTICE source can't read as stale in --check.
-            let text = String::from_utf8_lossy(&bytes).replace("\r\n", "\n");
-            copyright_lines(&text, &mut copyrights);
-            if is_notice {
-                notice_parts.push(text);
-            }
+            files.push((name, String::from_utf8_lossy(&bytes).replace("\r\n", "\n"), is_notice));
+        }
+    }
+    files
+}
+
+pub fn harvest_extras(pkg: &Package) -> Extras {
+    let mut copyrights = BTreeSet::new();
+    let mut notice_parts: Vec<String> = Vec::new();
+    for (_, text, is_notice) in attribution_files(pkg) {
+        copyright_lines(&text, &mut copyrights);
+        if is_notice {
+            notice_parts.push(text);
         }
     }
     Extras {

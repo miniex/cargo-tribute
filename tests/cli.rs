@@ -287,6 +287,226 @@ fn format_text_and_cyclonedx_report_without_writing() {
     fs::remove_dir_all(&dir).ok();
 }
 
+// a plain app fixture with one MIT path dep; several tests below share this shape.
+fn write_app(dir: &Path, dep_license: &str) -> std::path::PathBuf {
+    write(
+        &dir.join("dep/Cargo.toml"),
+        &format!("[package]\nname = \"dep\"\nversion = \"1.0.0\"\nedition = \"2021\"\nlicense = \"{dep_license}\"\n"),
+    );
+    write(&dir.join("dep/src/lib.rs"), "");
+    write(
+        &dir.join("app/Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\ndep = { path = \"../dep\" }\n",
+    );
+    write(&dir.join("app/src/main.rs"), "fn main() {}\n");
+    dir.join("app/Cargo.toml")
+}
+
+#[test]
+fn package_selection_limits_the_closure() {
+    // a two-member workspace: -p a must attribute only a's dependency.
+    let dir = std::env::temp_dir().join(format!("tribute-pkg-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    // exclude the deps, or cargo absorbs the in-tree path deps as members and the
+    // members-are-excluded rule would leave nothing to attribute.
+    write(
+        &dir.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"a\", \"b\"]\nexclude = [\"depa\", \"depb\"]\nresolver = \"2\"\n",
+    );
+    for (member, dep) in [("a", "depa"), ("b", "depb")] {
+        write(
+            &dir.join(format!("{dep}/Cargo.toml")),
+            &format!("[package]\nname = \"{dep}\"\nversion = \"1.0.0\"\nedition = \"2021\"\nlicense = \"MIT\"\n"),
+        );
+        write(&dir.join(format!("{dep}/src/lib.rs")), "");
+        write(
+            &dir.join(format!("{member}/Cargo.toml")),
+            &format!(
+                "[package]\nname = \"{member}\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n\
+                 [dependencies]\n{dep} = {{ path = \"../{dep}\" }}\n"
+            ),
+        );
+        write(&dir.join(format!("{member}/src/lib.rs")), "");
+    }
+    let manifest_path = dir.join("Cargo.toml");
+
+    let out = tribute(&manifest_path, &["-p", "a"]);
+    assert!(out.status.success(), "-p a failed: {}", String::from_utf8_lossy(&out.stderr));
+    let manifest = fs::read_to_string(dir.join("THIRD-PARTY.md")).unwrap();
+    assert!(manifest.contains("depa"), "manifest:\n{manifest}");
+    assert!(!manifest.contains("depb"), "-p a must exclude b's deps:\n{manifest}");
+
+    // an unknown member is an error, not a silently empty run.
+    assert!(!tribute(&manifest_path, &["-p", "nope"]).status.success());
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn from_deny_reuses_the_allowlist() {
+    // dep is MPL-2.0: rejected by the defaults, allowed by deny.toml's exceptions.
+    let dir = std::env::temp_dir().join(format!("tribute-deny-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    let manifest_path = write_app(&dir, "MPL-2.0");
+    write(
+        &dir.join("app/deny.toml"),
+        "[licenses]\nallow = [\"MIT\", \"Apache-2.0\"]\nexceptions = [{ allow = [\"MPL-2.0\"], crate = \"dep\" }]\n",
+    );
+    let deny = dir.join("app/deny.toml");
+    let deny = deny.to_str().unwrap();
+
+    let out = tribute(&manifest_path, &["--from-deny", deny]);
+    assert!(out.status.success(), "--from-deny failed: {}", String::from_utf8_lossy(&out.stderr));
+    let manifest = fs::read_to_string(dir.join("app/THIRD-PARTY.md")).unwrap();
+    assert!(manifest.contains("## MPL-2.0"), "manifest:\n{manifest}");
+
+    // an explicit accepted list in tribute.toml conflicts with --from-deny.
+    write(&dir.join("app/tribute.toml"), "accepted = [\"MIT\"]\n");
+    let out = tribute(&manifest_path, &["--from-deny", deny]);
+    assert!(!out.status.success(), "conflicting sources must fail");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("keep one source"));
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn exit_codes_distinguish_failure_kinds() {
+    let dir = std::env::temp_dir().join(format!("tribute-exit-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    let manifest_path = write_app(&dir, "GPL-3.0-only");
+
+    // 1: the license policy failed.
+    assert_eq!(tribute(&manifest_path, &[]).status.code(), Some(1));
+
+    // 2: --check found stale output.
+    write(
+        &dir.join("dep/Cargo.toml"),
+        "[package]\nname = \"dep\"\nversion = \"1.0.0\"\nedition = \"2021\"\nlicense = \"MIT\"\n",
+    );
+    assert_eq!(tribute(&manifest_path, &["--check"]).status.code(), Some(2));
+
+    // 3: anything else (unreadable config).
+    write(&dir.join("app/tribute.toml"), "accepted = 3\n");
+    assert_eq!(tribute(&manifest_path, &[]).status.code(), Some(3));
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn quiet_suppresses_the_summary() {
+    let dir = std::env::temp_dir().join(format!("tribute-quiet-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    let manifest_path = write_app(&dir, "MIT");
+
+    let out = tribute(&manifest_path, &["--quiet"]);
+    assert!(out.status.success());
+    assert!(out.stdout.is_empty(), "quiet must print nothing on success");
+    // the files are still written.
+    assert!(dir.join("app/THIRD-PARTY.md").exists());
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn init_scaffolds_a_config() {
+    let dir = std::env::temp_dir().join(format!("tribute-init-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    let manifest_path = write_app(&dir, "MIT");
+
+    let out = tribute(&manifest_path, &["init"]);
+    assert!(out.status.success(), "init failed: {}", String::from_utf8_lossy(&out.stderr));
+    let cfg = fs::read_to_string(dir.join("app/tribute.toml")).unwrap();
+    assert!(cfg.contains("# accepted = ["), "template must show the defaults:\n{cfg}");
+    // everything is commented out: the scaffold must not change behavior.
+    assert!(tribute(&manifest_path, &[]).status.success());
+
+    // a second init must not clobber the existing config.
+    assert!(!tribute(&manifest_path, &["init"]).status.success());
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn skip_private_and_proc_macros_opt_out() {
+    // `pm` is a proc-macro pulling `pmdep`; `dep` is a plain path dep. the skip
+    // options drop them (and the proc-macro's subtree) from the attribution.
+    let dir = std::env::temp_dir().join(format!("tribute-skip-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    for name in ["dep", "pmdep"] {
+        write(
+            &dir.join(format!("{name}/Cargo.toml")),
+            &format!("[package]\nname = \"{name}\"\nversion = \"1.0.0\"\nedition = \"2021\"\nlicense = \"MIT\"\n"),
+        );
+        write(&dir.join(format!("{name}/src/lib.rs")), "");
+    }
+    write(
+        &dir.join("pm/Cargo.toml"),
+        "[package]\nname = \"pm\"\nversion = \"1.0.0\"\nedition = \"2021\"\nlicense = \"MIT\"\n\n\
+         [lib]\nproc-macro = true\n\n[dependencies]\npmdep = { path = \"../pmdep\" }\n",
+    );
+    write(&dir.join("pm/src/lib.rs"), "");
+    write(
+        &dir.join("app/Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n\
+         [dependencies]\ndep = { path = \"../dep\" }\npm = { path = \"../pm\" }\n",
+    );
+    write(&dir.join("app/src/main.rs"), "fn main() {}\n");
+    let manifest_path = dir.join("app/Cargo.toml");
+
+    // default: everything is attributed.
+    assert!(tribute(&manifest_path, &[]).status.success());
+    let manifest = fs::read_to_string(dir.join("app/THIRD-PARTY.md")).unwrap();
+    for name in ["dep", "pm 1.0.0", "pmdep"] {
+        assert!(manifest.contains(name), "missing {name}:\n{manifest}");
+    }
+
+    // skip-proc-macros drops pm and its subtree; dep stays.
+    write(&dir.join("app/tribute.toml"), "skip-proc-macros = true\n");
+    assert!(tribute(&manifest_path, &[]).status.success());
+    let manifest = fs::read_to_string(dir.join("app/THIRD-PARTY.md")).unwrap();
+    assert!(manifest.contains("dep 1.0.0"), "manifest:\n{manifest}");
+    assert!(!manifest.contains("pm 1.0.0"), "manifest:\n{manifest}");
+    assert!(!manifest.contains("pmdep"), "the proc-macro subtree must go too:\n{manifest}");
+
+    // skip-private drops the path deps entirely (none are from crates.io).
+    write(&dir.join("app/tribute.toml"), "skip-private = true\n");
+    assert!(tribute(&manifest_path, &[]).status.success());
+    let manifest = fs::read_to_string(dir.join("app/THIRD-PARTY.md")).unwrap();
+    assert!(!manifest.contains("dep 1.0.0"), "manifest:\n{manifest}");
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn audit_flags_a_mismatched_license_file() {
+    // dep declares Zlib but ships the MIT text: --audit must call it out, exit 0.
+    let dir = std::env::temp_dir().join(format!("tribute-audit-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    let manifest_path = write_app(&dir, "Zlib");
+    write(
+        &dir.join("dep/LICENSE"),
+        "MIT License\n\nCopyright (c) 2024 Dep Author\n\nPermission is hereby granted, free of charge, to any \
+         person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal \
+         in the Software without restriction, including without limitation the rights to use, copy, modify, \
+         merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to \
+         whom the Software is furnished to do so, subject to the following conditions:\n\nThe above copyright \
+         notice and this permission notice shall be included in all copies or substantial portions of the \
+         Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, \
+         INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND \
+         NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR \
+         OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN \
+         CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n",
+    );
+
+    let out = tribute(&manifest_path, &["--audit"]);
+    assert!(out.status.success(), "audit is advisory and must exit 0");
+    let report = String::from_utf8_lossy(&out.stdout);
+    assert!(report.contains("matches MIT"), "report:\n{report}");
+    assert!(report.contains("declared license is 'Zlib'"), "report:\n{report}");
+
+    fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn features_flag_attributes_optional_deps() {
     // `dep` is pulled in only by the optional `extra` feature. a default run must not

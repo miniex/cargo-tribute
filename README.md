@@ -31,7 +31,12 @@ cargo binstall cargo-tribute
 
 ```
 cargo tribute                     # write LICENSES/, NOTICES/ and THIRD-PARTY.md
+cargo tribute init                # scaffold a commented tribute.toml
 cargo tribute --check             # verify they are current and every license is accepted
+cargo tribute --audit             # compare declared licenses against the license files the
+                                  # crates actually ship (advisory report, never fails)
+cargo tribute -p NAME             # attribute only this workspace member's deps (repeatable)
+cargo tribute --from-deny deny.toml  # reuse cargo-deny's [licenses] allow list + exceptions
 cargo tribute --manifest-path P   # run against a specific Cargo.toml (writes at its workspace root)
 cargo tribute --locked --check    # forward --locked/--offline/--frozen to cargo metadata (for CI)
 cargo tribute --all-features      # forward --features/--all-features/--filter-platform too, to
@@ -41,8 +46,11 @@ cargo tribute --format text       # one flat plain-text document: attribution li
                                   # texts, NOTICE bodies (for an "open source licenses" screen)
 cargo tribute --format cyclonedx  # CycloneDX 1.6 SBOM carrying the license texts and
                                   # per-component copyright (no files written)
+cargo tribute --quiet             # suppress the success summary
 cargo tribute --help
 ```
+
+Exit codes distinguish the failure: 1 license policy failed, 2 output out of date (`--check`), 3 anything else.
 
 ## Use in CI
 
@@ -73,6 +81,7 @@ All of these are good tools; this is where `cargo-tribute` differs (behavior as 
 | Per-crate exceptions           | yes (`[[exception]]`)                       | per-crate accepted       | yes (`exceptions`)    | no              |
 | Vendored non-crate code        | yes (`[[extra]]`)                           | no                       | no                    | no              |
 | SBOM output                    | CycloneDX 1.6 with license texts            | no                       | no                    | no              |
+| Declared-vs-shipped audit      | yes (`--audit`)                             | n/a (harvests files)     | no                    | no              |
 | Staleness `--check` for CI     | yes                                         | no                       | n/a                   | no              |
 | Setup                          | zero-config (optional `tribute.toml`)       | template + `about.toml`  | `deny.toml`           | flags only      |
 
@@ -86,6 +95,9 @@ A `tribute.toml` in the project root overrides the defaults (all fields optional
 accepted = ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "0BSD", "Zlib", "Unlicense", "Unicode-3.0"]
 include-dev = false           # also attribute dev-dependencies
 include-build = false         # also attribute build-dependencies
+skip-private = false          # skip path/git/non-crates.io dependencies (first-party;
+                              # their crates.io deps are still walked and attributed)
+skip-proc-macros = false      # skip proc-macro crates and their compile-time subtree
 manifest = "THIRD-PARTY.md"   # attribution manifest path
 licenses-dir = "LICENSES"     # folder for the canonical license texts
 notices-dir = "NOTICES"       # folder for NOTICE files shipped by dependencies
@@ -130,7 +142,15 @@ Code the crate graph can't see -- C sources vendored in a `-sys` crate, a bundle
 
 `--format json|text|cyclonedx` prints the resolved attribution to stdout instead of writing files. `text` is one flat plain-text document -- the attribution list, the full license texts, then the NOTICE bodies -- ready for an "open source licenses" screen (save it, commit it, `include_str!` it). `cyclonedx` is a CycloneDX 1.6 SBOM whose components carry the full license texts and a per-component copyright, the fields id-only SBOM generators leave empty; `serialNumber` and `timestamp` are deliberately omitted so the output stays deterministic (same tree, same bytes).
 
-Only normal (runtime) dependencies are attributed by default -- set `include-dev`/`include-build` to attribute (and gate) dev- and build-dependencies too. By default `cargo metadata` resolves the default feature set, so optional (feature-gated) dependencies are not attributed unless you enable them with `--features`/`--all-features`. Canonical license texts (and `WITH` exception texts) come from the [`spdx`](https://crates.io/crates/spdx) crate, so every SPDX license and exception is covered with no texts to hand-maintain.
+## Auditing declared licenses
+
+crates.io license metadata is occasionally wrong -- a crate declares `BSD-2-Clause` but ships an extra license file. `cargo tribute --audit` scans each dependency's bundled license files, matches them against the SPDX corpus, and reports files whose best match is not covered by the crate's declared expression. It is advisory only: findings do not fail the run, and near-identical corpus texts (Apache-2.0 vs Pixar) are not reported when the declared license matches about as well.
+
+## Reusing a cargo-deny allowlist
+
+Teams already gating licenses with cargo-deny keep the allowlist in `deny.toml`; duplicating it in `tribute.toml` invites drift. `cargo tribute --from-deny deny.toml` takes `[licenses].allow` as the accepted list (WITH pairings included) and maps `[licenses].exceptions` onto per-crate `[[exception]]` entries. Setting `accepted` in tribute.toml at the same time is an error -- keep one source.
+
+Only normal (runtime) dependencies are attributed by default -- set `include-dev`/`include-build` to attribute (and gate) dev- and build-dependencies too. In the other direction, `skip-private` drops path/git/non-crates.io dependencies (first-party code; their crates.io deps are still walked) and `skip-proc-macros` drops proc-macro crates together with their compile-time subtree. By default `cargo metadata` resolves the default feature set, so optional (feature-gated) dependencies are not attributed unless you enable them with `--features`/`--all-features`. Canonical license texts (and `WITH` exception texts) come from the [`spdx`](https://crates.io/crates/spdx) crate, so every SPDX license and exception is covered with no texts to hand-maintain.
 
 A crate with no `license` field (it declares `license-file` instead), or a wrong or non-SPDX one, is a hard error until you give it an SPDX expression with a `[[clarify]]` entry; the clarified expression then flows through the same accepted-set policy.
 

@@ -171,8 +171,23 @@ pub fn stale_outputs(
             }
         }
     }
-    if !matches_output(fs::read_to_string(manifest_path).ok(), manifest) {
-        stale.push(manifest_path.display().to_string());
+    // for the manifest, point at the first drifted line; the file is too big to
+    // hand-diff on a failed --check.
+    let disk = fs::read_to_string(manifest_path).ok();
+    if !matches_output(disk.clone(), manifest) {
+        let entry = match &disk {
+            Some(d) => {
+                let d = d.replace("\r\n", "\n");
+                let line = d
+                    .lines()
+                    .zip(manifest.lines())
+                    .position(|(a, b)| a != b)
+                    .map_or_else(|| d.lines().count().min(manifest.lines().count()) + 1, |i| i + 1);
+                format!("{} (first difference at line {line})", manifest_path.display())
+            }
+            None => manifest_path.display().to_string(),
+        };
+        stale.push(entry);
     }
     stale
 }

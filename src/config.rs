@@ -19,6 +19,10 @@ struct Config {
     include_dev: Option<bool>,
     #[serde(rename = "include-build")]
     include_build: Option<bool>,
+    #[serde(rename = "skip-private")]
+    skip_private: Option<bool>,
+    #[serde(rename = "skip-proc-macros")]
+    skip_proc_macros: Option<bool>,
     manifest: Option<String>,
     #[serde(rename = "licenses-dir")]
     licenses_dir: Option<String>,
@@ -99,6 +103,8 @@ pub struct Settings {
     pub accepted_explicit: bool, // came from tribute.toml, not the built-in default
     pub include_dev: bool,
     pub include_build: bool,
+    pub skip_private: bool,     // skip deps not from crates.io (path/git/alt registry)
+    pub skip_proc_macros: bool, // skip proc-macro crates and their compile-time subtree
     pub clarify: Vec<Clarify>,
     pub exception: Vec<Exception>,
     pub extra: Vec<Extra>,
@@ -147,6 +153,8 @@ pub fn load_settings(root: &Utf8Path) -> Result<Settings, String> {
         accepted_explicit,
         include_dev: cfg.include_dev.unwrap_or(false),
         include_build: cfg.include_build.unwrap_or(false),
+        skip_private: cfg.skip_private.unwrap_or(false),
+        skip_proc_macros: cfg.skip_proc_macros.unwrap_or(false),
         clarify: cfg.clarify.unwrap_or_default(),
         exception: cfg.exception.unwrap_or_default(),
         extra: cfg.extra.unwrap_or_default(),
@@ -200,6 +208,46 @@ pub fn warn_unknown_ids(kind: &str, a: &Accept) {
 // a tribute.toml [[clarify]] expression overriding this crate's declared license.
 pub fn clarify_expr<'a>(clarify: &'a [Clarify], name: &str, version: &Version) -> Option<&'a str> {
     clarify.iter().find(|c| clarify_matches(c, name, version)).map(|c| c.expression.as_str())
+}
+
+// the subset of a cargo-deny deny.toml we can reuse; everything else in that file
+// is cargo-deny's business, so no deny_unknown_fields here.
+#[derive(Deserialize)]
+struct DenyConfig {
+    licenses: Option<DenyLicenses>,
+}
+
+#[derive(Deserialize)]
+struct DenyLicenses {
+    allow: Option<Vec<String>>,
+    exceptions: Option<Vec<DenyException>>,
+}
+
+#[derive(Deserialize)]
+struct DenyException {
+    // cargo-deny spells it `crate` today and `name` historically; take both.
+    #[serde(rename = "crate", alias = "name")]
+    name: String,
+    allow: Vec<String>,
+    version: Option<String>,
+}
+
+// take the accepted list (and per-crate exceptions) from deny.toml's [licenses],
+// so teams already on cargo-deny keep the allowlist in one place.
+pub fn apply_deny(set: &mut Settings, path: &Path) -> Result<(), String> {
+    if set.accepted_explicit {
+        return Err("tribute.toml sets `accepted` and --from-deny is given; keep one source".into());
+    }
+    let s = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let cfg: DenyConfig = toml::from_str(&s).map_err(|e| format!("{}: {e}", path.display()))?;
+    let lic = cfg.licenses.ok_or_else(|| format!("{}: no [licenses] section", path.display()))?;
+    let allow = lic.allow.ok_or_else(|| format!("{}: no [licenses] allow list", path.display()))?;
+    set.accepted = allow.iter().map(|s| parse_accept(s)).collect();
+    set.accepted_explicit = true;
+    for e in lic.exceptions.unwrap_or_default() {
+        set.exception.push(Exception { name: e.name, version: e.version, allow: e.allow });
+    }
+    Ok(())
 }
 
 #[cfg(test)]
