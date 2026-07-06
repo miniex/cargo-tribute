@@ -66,6 +66,7 @@ All of these are good tools; this is where `cargo-tribute` differs (behavior as 
 | Attribution output             | `THIRD-PARTY.md` + REUSE `LICENSES/` folder | one file from a template | none (license linter) | lists to stdout |
 | Copyright lines + NOTICE files | yes                                         | no                       | no                    | authors only    |
 | Accepted-license gate          | yes                                         | yes (config)             | yes (its focus)       | no              |
+| Per-crate exceptions           | yes (`[[exception]]`)                       | per-crate accepted       | yes (`exceptions`)    | no              |
 | Staleness `--check` for CI     | yes                                         | no                       | n/a                   | no              |
 | Setup                          | zero-config (optional `tribute.toml`)       | template + `about.toml`  | `deny.toml`           | flags only      |
 
@@ -77,6 +78,8 @@ A `tribute.toml` in the project root overrides the defaults (all fields optional
 
 ```toml
 accepted = ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "0BSD", "Zlib", "Unlicense", "Unicode-3.0"]
+include-dev = false           # also attribute dev-dependencies
+include-build = false         # also attribute build-dependencies
 manifest = "THIRD-PARTY.md"   # attribution manifest path
 licenses-dir = "LICENSES"     # folder for the canonical license texts
 notices-dir = "NOTICES"       # folder for NOTICE files shipped by dependencies
@@ -87,13 +90,21 @@ notices-dir = "NOTICES"       # folder for NOTICE files shipped by dependencies
 name = "ring"
 version = "0.17.8"            # optional semver req (like Cargo); omit to match any version
 expression = "MIT AND ISC AND OpenSSL"
+
+# allow extra licenses for one crate only, without widening the global accepted
+# set. Repeatable; `version` optional, like [[clarify]].
+[[exception]]
+name = "unicode-ident"
+allow = ["Unicode-DFS-2016"]
 ```
 
 ## How a license is chosen
 
 Each crate's SPDX expression is evaluated against `accepted` (which is also the OR preference order): for `A OR B` it picks the preferred accepted license, for `A AND B` it keeps both. Legacy `/`-separated expressions (`MIT/Apache-2.0`) are accepted. A crate whose expression cannot be satisfied from the accepted set is a hard error.
 
-Only normal (runtime) dependencies are attributed -- dev- and build-dependencies are skipped. By default `cargo metadata` resolves the default feature set, so optional (feature-gated) dependencies are not attributed unless you enable them with `--features`/`--all-features`. Canonical license texts (and `WITH` exception texts) come from the [`spdx`](https://crates.io/crates/spdx) crate, so every SPDX license and exception is covered with no texts to hand-maintain.
+An `accepted` entry can also be a pairing like `"GPL-2.0-only WITH Classpath-exception-2.0"`, which allows exactly that combination without accepting the bare license. A `[[exception]]` entry allows extra licenses for one named crate only; they lose the OR preference to globally accepted ones. When `accepted` is set explicitly, an entry that no dependency's expression references is warned about, so a stale allowlist stays visible.
+
+Only normal (runtime) dependencies are attributed by default -- set `include-dev`/`include-build` to attribute (and gate) dev- and build-dependencies too. By default `cargo metadata` resolves the default feature set, so optional (feature-gated) dependencies are not attributed unless you enable them with `--features`/`--all-features`. Canonical license texts (and `WITH` exception texts) come from the [`spdx`](https://crates.io/crates/spdx) crate, so every SPDX license and exception is covered with no texts to hand-maintain.
 
 A crate with no `license` field (it declares `license-file` instead), or a wrong or non-SPDX one, is a hard error until you give it an SPDX expression with a `[[clarify]]` entry; the clarified expression then flows through the same accepted-set policy.
 

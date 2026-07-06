@@ -8,6 +8,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 - Each crate's copyright holders now appear in `THIRD-PARTY.md`: `Copyright ...` lines are harvested from the license/notice files in the crate's local sources (nothing is downloaded), falling back to the `authors` metadata, so the canonical license texts are completed by the attribution the MIT/BSD family asks to reproduce. `--json` gains per-crate `authors`, `copyrights`, and `notice` fields.
 - NOTICE files shipped by dependencies -- which Apache-2.0 section 4(d) asks redistributors to pass along -- are bundled into a `NOTICES/` folder (`notices-dir` in tribute.toml) and linked from `THIRD-PARTY.md`. They are covered by `--check` and orphan-cleaned like license texts; the folder only exists while a dependency actually ships one.
+- `[[exception]]` in tribute.toml allows extra licenses for one crate only (optional semver `version`, like `[[clarify]]`), without widening the global accepted set; exception licenses lose the OR preference to globally accepted ones.
+- An `accepted` entry can now be a `license WITH exception` pairing (e.g. `"GPL-2.0-only WITH Classpath-exception-2.0"`), accepting exactly that combination without accepting the bare license.
+- `include-dev` / `include-build` in tribute.toml attribute (and gate) dev- and build-dependencies too; both remain skipped by default.
+- A warning when an explicitly configured `accepted` entry is referenced by no dependency's expression, and when an `[[exception]]` entry matches no crate, so stale policy entries are visible.
 
 ### Changed
 

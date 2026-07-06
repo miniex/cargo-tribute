@@ -80,6 +80,104 @@ fn writes_manifest_then_check_roundtrips() {
 }
 
 #[test]
+fn exception_allows_a_license_for_one_crate() {
+    // `dep` is MPL-2.0, which is not in the default accepted set: a plain run must
+    // fail, and a [[exception]] entry for that crate must let it through.
+    let dir = std::env::temp_dir().join(format!("tribute-exc-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    write(
+        &dir.join("dep/Cargo.toml"),
+        "[package]\nname = \"dep\"\nversion = \"1.0.0\"\nedition = \"2021\"\nlicense = \"MPL-2.0\"\n",
+    );
+    write(&dir.join("dep/src/lib.rs"), "");
+    write(
+        &dir.join("app/Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\ndep = { path = \"../dep\" }\n",
+    );
+    write(&dir.join("app/src/main.rs"), "fn main() {}\n");
+    let manifest_path = dir.join("app/Cargo.toml");
+
+    let out = tribute(&manifest_path, &[]);
+    assert!(!out.status.success(), "MPL-2.0 must fail without an exception");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not in the accepted set"));
+
+    write(&dir.join("app/tribute.toml"), "[[exception]]\nname = \"dep\"\nallow = [\"MPL-2.0\"]\n");
+    let out = tribute(&manifest_path, &[]);
+    assert!(out.status.success(), "exception run failed: {}", String::from_utf8_lossy(&out.stderr));
+    let manifest = fs::read_to_string(dir.join("app/THIRD-PARTY.md")).unwrap();
+    assert!(manifest.contains("## MPL-2.0"), "manifest:\n{manifest}");
+    assert!(dir.join("app/LICENSES/MPL-2.0.txt").exists());
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn include_dev_and_build_deps_opt_in() {
+    // `devdep`/`builddep` are dev- and build-dependencies: skipped by default,
+    // attributed once tribute.toml opts in.
+    let dir = std::env::temp_dir().join(format!("tribute-kinds-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    for name in ["devdep", "builddep"] {
+        write(
+            &dir.join(format!("{name}/Cargo.toml")),
+            &format!("[package]\nname = \"{name}\"\nversion = \"1.0.0\"\nedition = \"2021\"\nlicense = \"MIT\"\n"),
+        );
+        write(&dir.join(format!("{name}/src/lib.rs")), "");
+    }
+    write(
+        &dir.join("app/Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n\
+         [dev-dependencies]\ndevdep = { path = \"../devdep\" }\n\n\
+         [build-dependencies]\nbuilddep = { path = \"../builddep\" }\n",
+    );
+    write(&dir.join("app/src/main.rs"), "fn main() {}\n");
+    write(&dir.join("app/build.rs"), "fn main() {}\n");
+    let manifest_path = dir.join("app/Cargo.toml");
+
+    let out = tribute(&manifest_path, &[]);
+    assert!(out.status.success(), "default run failed: {}", String::from_utf8_lossy(&out.stderr));
+    let manifest = fs::read_to_string(dir.join("app/THIRD-PARTY.md")).unwrap();
+    assert!(!manifest.contains("devdep"), "dev dep must be skipped by default:\n{manifest}");
+    assert!(!manifest.contains("builddep"), "build dep must be skipped by default:\n{manifest}");
+
+    write(&dir.join("app/tribute.toml"), "include-dev = true\ninclude-build = true\n");
+    let out = tribute(&manifest_path, &[]);
+    assert!(out.status.success(), "opt-in run failed: {}", String::from_utf8_lossy(&out.stderr));
+    let manifest = fs::read_to_string(dir.join("app/THIRD-PARTY.md")).unwrap();
+    assert!(manifest.contains("devdep 1.0.0"), "include-dev must attribute the dev dep:\n{manifest}");
+    assert!(manifest.contains("builddep 1.0.0"), "include-build must attribute the build dep:\n{manifest}");
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn unused_accepted_entry_warns() {
+    // an explicit accepted list with an entry no dependency references warns; the
+    // used entry does not.
+    let dir = std::env::temp_dir().join(format!("tribute-unused-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    write(
+        &dir.join("dep/Cargo.toml"),
+        "[package]\nname = \"dep\"\nversion = \"1.0.0\"\nedition = \"2021\"\nlicense = \"MIT\"\n",
+    );
+    write(&dir.join("dep/src/lib.rs"), "");
+    write(
+        &dir.join("app/Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\ndep = { path = \"../dep\" }\n",
+    );
+    write(&dir.join("app/src/main.rs"), "fn main() {}\n");
+    write(&dir.join("app/tribute.toml"), "accepted = [\"MIT\", \"Zlib\"]\n");
+
+    let out = tribute(&dir.join("app/Cargo.toml"), &[]);
+    assert!(out.status.success(), "run failed: {}", String::from_utf8_lossy(&out.stderr));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("accepted license 'Zlib' matched no dependency"), "stderr:\n{stderr}");
+    assert!(!stderr.contains("'MIT' matched"), "used entry must not warn:\n{stderr}");
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn features_flag_attributes_optional_deps() {
     // `dep` is pulled in only by the optional `extra` feature. a default run must not
     // attribute it; forwarding `--features extra` to cargo metadata must.

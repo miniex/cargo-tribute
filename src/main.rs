@@ -28,12 +28,17 @@ fn canonical_text(id: &str) -> Option<&'static str> {
 #[serde(deny_unknown_fields)]
 struct Config {
     accepted: Option<Vec<String>>,
+    #[serde(rename = "include-dev")]
+    include_dev: Option<bool>,
+    #[serde(rename = "include-build")]
+    include_build: Option<bool>,
     manifest: Option<String>,
     #[serde(rename = "licenses-dir")]
     licenses_dir: Option<String>,
     #[serde(rename = "notices-dir")]
     notices_dir: Option<String>,
     clarify: Option<Vec<Clarify>>,
+    exception: Option<Vec<Exception>>,
 }
 
 // override a crate's license when its `license` field is missing (crates that use
@@ -46,9 +51,46 @@ struct Clarify {
     expression: String,
 }
 
+// allow extra licenses for one crate only, without widening the global accepted set.
+// `version` optional, like [[clarify]].
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Exception {
+    name: String,
+    version: Option<String>,
+    allow: Vec<String>,
+}
+
+// an accepted-list entry: a bare "MIT" allows the license with or without an
+// exception; a "GPL-2.0-only WITH Classpath-exception-2.0" only that exact pairing.
+#[derive(Clone)]
+struct Accept {
+    raw: String,
+    license: String,
+    exception: Option<String>,
+}
+
+fn parse_accept(s: &str) -> Accept {
+    match s.split_once(" WITH ") {
+        Some((l, e)) => Accept { raw: s.into(), license: l.trim().into(), exception: Some(e.trim().into()) },
+        None => Accept { raw: s.into(), license: s.trim().into(), exception: None },
+    }
+}
+
+impl Accept {
+    // does this entry allow a leaf `license` (optionally `WITH exception`)?
+    fn allows(&self, license: &str, exception: Option<&str>) -> bool {
+        self.license == license && self.exception.as_deref().is_none_or(|e| exception == Some(e))
+    }
+}
+
 struct Settings {
-    accepted: Vec<String>,
+    accepted: Vec<Accept>,
+    accepted_explicit: bool, // came from tribute.toml, not the built-in default
+    include_dev: bool,
+    include_build: bool,
     clarify: Vec<Clarify>,
+    exception: Vec<Exception>,
     manifest: PathBuf,     // absolute output path
     manifest_link: String, // relative name, for messages
     licenses_dir: PathBuf, // absolute output dir
@@ -76,9 +118,20 @@ fn load_settings(root: &Utf8Path) -> Result<Settings, String> {
     relative_inside("manifest", &manifest_link)?;
     relative_inside("licenses-dir", &licenses_link)?;
     relative_inside("notices-dir", &notices_link)?;
+    let accepted_explicit = cfg.accepted.is_some();
+    let accepted = cfg
+        .accepted
+        .unwrap_or_else(|| DEFAULT_ACCEPTED.iter().map(|s| s.to_string()).collect())
+        .iter()
+        .map(|s| parse_accept(s))
+        .collect();
     Ok(Settings {
-        accepted: cfg.accepted.unwrap_or_else(|| DEFAULT_ACCEPTED.iter().map(|s| s.to_string()).collect()),
+        accepted,
+        accepted_explicit,
+        include_dev: cfg.include_dev.unwrap_or(false),
+        include_build: cfg.include_build.unwrap_or(false),
         clarify: cfg.clarify.unwrap_or_default(),
+        exception: cfg.exception.unwrap_or_default(),
         manifest: root.join(&manifest_link).into(),
         licenses_dir: root.join(&licenses_link).into(),
         notices_dir: root.join(&notices_link).into(),
@@ -242,15 +295,22 @@ OPTIONS:
     -V, --version            print version
 
 CONFIG (tribute.toml in the project root, all optional):
-    accepted = [\"MIT\", \"Apache-2.0\", ...]   # allowed licenses; also the OR preference order
-    manifest = \"THIRD-PARTY.md\"              # attribution manifest path
-    licenses-dir = \"LICENSES\"                # folder for the canonical license texts
-    notices-dir = \"NOTICES\"                  # folder for NOTICE files shipped by dependencies
+    accepted = [\"MIT\", \"Apache-2.0\", ...]    # allowed licenses, or \"A WITH B\" pairings;
+                                                 # also the OR preference order
+    include-dev = false                          # also attribute dev-dependencies
+    include-build = false                        # also attribute build-dependencies
+    manifest = \"THIRD-PARTY.md\"                # attribution manifest path
+    licenses-dir = \"LICENSES\"                  # folder for the canonical license texts
+    notices-dir = \"NOTICES\"                    # folder for NOTICE files shipped by dependencies
 
-    [[clarify]]                              # override a crate's license (missing/wrong/non-SPDX)
+    [[clarify]]                                  # override a crate's license (missing/wrong/non-SPDX)
     name = \"ring\"
-    version = \"0.17.8\"                       # optional semver req; omit to match any version
+    version = \"0.17.8\"                         # optional semver req; omit to match any version
     expression = \"MIT AND ISC AND OpenSSL\"
+
+    [[exception]]                                # allow extra licenses for one crate only
+    name = \"unicode-ident\"
+    allow = [\"Unicode-DFS-2016\"]
 ";
 
 fn main() -> ExitCode {
@@ -322,10 +382,13 @@ fn run(check: bool, json: bool, manifest_path: Option<String>, cargo_flags: Vec<
     }
     let meta = cmd.exec().map_err(|e| e.to_string())?;
     let set = load_settings(&meta.workspace_root)?;
-    // a typo in `accepted` (e.g. "Apache2.0") would silently reject that license; flag it.
+    // a typo in a policy entry (e.g. "Apache2.0") would silently reject that license; flag it.
     for a in &set.accepted {
-        if spdx::license_id(a).is_none() {
-            eprintln!("cargo-tribute: warning: accepted license '{a}' is not a known SPDX id");
+        warn_unknown_ids("accepted", a);
+    }
+    for x in &set.exception {
+        for a in x.allow.iter().map(|s| parse_accept(s)) {
+            warn_unknown_ids("exception-allowed", &a);
         }
     }
     let resolve = meta.resolve.as_ref().ok_or("no dependency resolution (need a Cargo.toml)")?;
@@ -334,7 +397,8 @@ fn run(check: bool, json: bool, manifest_path: Option<String>, cargo_flags: Vec<
     let pkg_of: BTreeMap<&PackageId, &Package> = meta.packages.iter().map(|p| (&p.id, p)).collect();
     let workspace: BTreeSet<&PackageId> = meta.workspace_members.iter().collect();
 
-    // normal-dependency closure of the workspace members, minus the members themselves.
+    // dependency closure of the workspace members, minus the members themselves.
+    // normal deps always; dev and build deps only when opted in via tribute.toml.
     let mut seen = BTreeSet::new();
     let mut stack: Vec<&PackageId> = meta.workspace_members.iter().collect();
     let mut deps = BTreeSet::new();
@@ -344,7 +408,13 @@ fn run(check: bool, json: bool, manifest_path: Option<String>, cargo_flags: Vec<
         }
         let Some(node) = node_of.get(id) else { continue };
         for dep in &node.deps {
-            if !dep.dep_kinds.iter().any(|k| k.kind == DependencyKind::Normal) {
+            let wanted = dep.dep_kinds.iter().any(|k| match k.kind {
+                DependencyKind::Normal => true,
+                DependencyKind::Development => set.include_dev,
+                DependencyKind::Build => set.include_build,
+                _ => false,
+            });
+            if !wanted {
                 continue;
             }
             if !workspace.contains(&dep.pkg) {
@@ -361,6 +431,9 @@ fn run(check: bool, json: bool, manifest_path: Option<String>, cargo_flags: Vec<
     let mut effective: BTreeMap<&PackageId, &str> = BTreeMap::new();
     let mut chosen_of: BTreeMap<&PackageId, BTreeSet<String>> = BTreeMap::new();
     let mut used_exceptions: BTreeSet<String> = BTreeSet::new();
+    // every (license, WITH-exception) leaf seen across the tree, for the
+    // unused-accepted warning.
+    let mut encountered: BTreeSet<(String, Option<String>)> = BTreeSet::new();
     let mut failures = Vec::new();
     for id in &deps {
         // every resolve-graph id is also in meta.packages; guard the lookup so a
@@ -385,7 +458,30 @@ fn run(check: bool, json: bool, manifest_path: Option<String>, cargo_flags: Vec<
                 continue;
             }
         };
-        match choose(&expr, &set.accepted) {
+        for node in expr.iter() {
+            if let ExprNode::Req(r) = node
+                && let Some(lid) = r.req.license.id()
+            {
+                let ex = r.req.addition.as_ref().and_then(|a| a.id()).map(|e| e.name.to_string());
+                encountered.insert((lid.name.to_string(), ex));
+            }
+        }
+        // [[exception]] entries widen the accepted set for this crate only, appended
+        // after the global list so a globally-accepted license still wins the OR pick.
+        let extra: Vec<Accept> = set
+            .exception
+            .iter()
+            .filter(|x| policy_matches(&x.name, x.version.as_deref(), pkg.name.as_ref(), &pkg.version))
+            .flat_map(|x| x.allow.iter().map(|s| parse_accept(s)))
+            .collect();
+        let chosen = if extra.is_empty() {
+            choose(&expr, &set.accepted)
+        } else {
+            let mut acc = set.accepted.clone();
+            acc.extend(extra);
+            choose(&expr, &acc)
+        };
+        match chosen {
             Some(chosen) => {
                 // a WITH exception on a chosen license contributes its own text file.
                 for ex in exceptions_for(&expr, &chosen) {
@@ -399,14 +495,32 @@ fn run(check: bool, json: bool, manifest_path: Option<String>, cargo_flags: Vec<
             None => failures.push(format!("{name}: license '{expr_str}' not in the accepted set")),
         }
     }
-    // warn on clarify entries that matched no dependency, so a typo in name or version
-    // is visible instead of silently ignored.
+    // warn on clarify/exception entries that matched no dependency, so a typo in name
+    // or version is visible instead of silently ignored.
+    let no_match = |name: &str, version: Option<&str>| {
+        !deps
+            .iter()
+            .any(|id| pkg_of.get(id).is_some_and(|p| policy_matches(name, version, p.name.as_ref(), &p.version)))
+    };
     for c in &set.clarify {
-        let matched =
-            deps.iter().any(|id| pkg_of.get(id).is_some_and(|p| clarify_matches(c, p.name.as_ref(), &p.version)));
-        if !matched {
+        if no_match(&c.name, c.version.as_deref()) {
             let ver = c.version.as_deref().map(|v| format!(" {v}")).unwrap_or_default();
             eprintln!("cargo-tribute: warning: clarify for '{}{ver}' matched no dependency", c.name);
+        }
+    }
+    for x in &set.exception {
+        if no_match(&x.name, x.version.as_deref()) {
+            let ver = x.version.as_deref().map(|v| format!(" {v}")).unwrap_or_default();
+            eprintln!("cargo-tribute: warning: exception for '{}{ver}' matched no dependency", x.name);
+        }
+    }
+    // warn on accepted entries no dependency even references, so a stale allowlist is
+    // visible. explicit lists only; the built-in default may sit partly unused.
+    if set.accepted_explicit {
+        for a in &set.accepted {
+            if !encountered.iter().any(|(l, e)| a.allows(l, e.as_deref())) {
+                eprintln!("cargo-tribute: warning: accepted license '{}' matched no dependency", a.raw);
+            }
         }
     }
 
@@ -499,10 +613,26 @@ fn run(check: bool, json: bool, manifest_path: Option<String>, cargo_flags: Vec<
     }
 }
 
-// a clarify entry applies to this crate: name equal, and if the entry gives a version it
-// parses as a semver requirement the crate satisfies (so "1.0" matches 1.0.0, like Cargo).
+// a clarify/exception entry applies to this crate: name equal, and if it gives a version
+// it parses as a semver requirement the crate satisfies (so "1.0" matches 1.0.0, like Cargo).
+fn policy_matches(name: &str, version_req: Option<&str>, pkg: &str, version: &Version) -> bool {
+    name == pkg && version_req.is_none_or(|v| VersionReq::parse(v).is_ok_and(|req| req.matches(version)))
+}
+
 fn clarify_matches(c: &Clarify, name: &str, version: &Version) -> bool {
-    c.name == name && c.version.as_deref().is_none_or(|v| VersionReq::parse(v).is_ok_and(|req| req.matches(version)))
+    policy_matches(&c.name, c.version.as_deref(), name, version)
+}
+
+// warn when a policy entry is not a known SPDX id.
+fn warn_unknown_ids(kind: &str, a: &Accept) {
+    if spdx::license_id(&a.license).is_none() {
+        eprintln!("cargo-tribute: warning: {kind} license '{}' is not a known SPDX id", a.license);
+    }
+    if let Some(e) = &a.exception
+        && spdx::exception_id(e).is_none()
+    {
+        eprintln!("cargo-tribute: warning: {kind} exception '{e}' is not a known SPDX id");
+    }
 }
 
 // a tribute.toml [[clarify]] expression overriding this crate's declared license.
@@ -528,17 +658,20 @@ fn exceptions_for(expr: &spdx::Expression, chosen: &BTreeSet<String>) -> Vec<Str
 // walk the SPDX expression (postfix) to the licenses we attribute, or None if the
 // accepted set can't cover it. OR keeps the preferred operand, AND unions both, an
 // unaccepted leaf is None.
-fn choose(expr: &spdx::Expression, accepted: &[String]) -> Option<BTreeSet<String>> {
+fn choose(expr: &spdx::Expression, accepted: &[Accept]) -> Option<BTreeSet<String>> {
     let mut stack: Vec<Option<BTreeSet<String>>> = Vec::new();
     for node in expr.iter() {
         match node {
             ExprNode::Req(req) => {
-                let leaf =
-                    req.req.license.id().map(|id| id.name).filter(|n| accepted.iter().any(|a| a == n)).map(|n| {
-                        let mut s = BTreeSet::new();
-                        s.insert(n.to_string());
-                        s
-                    });
+                // a leaf is `license` or `license WITH exception`; see Accept::allows.
+                let ex = req.req.addition.as_ref().and_then(|a| a.id()).map(|e| e.name);
+                let leaf = req
+                    .req
+                    .license
+                    .id()
+                    .map(|id| id.name)
+                    .filter(|n| accepted.iter().any(|a| a.allows(n, ex)))
+                    .map(|n| BTreeSet::from([n.to_string()]));
                 stack.push(leaf);
             }
             ExprNode::Op(op) => {
@@ -555,7 +688,7 @@ fn combine(
     op: Operator,
     a: Option<BTreeSet<String>>,
     b: Option<BTreeSet<String>>,
-    accepted: &[String],
+    accepted: &[Accept],
 ) -> Option<BTreeSet<String>> {
     match op {
         Operator::And => match (a, b) {
@@ -573,8 +706,8 @@ fn combine(
     }
 }
 
-fn best(set: &BTreeSet<String>, accepted: &[String]) -> usize {
-    set.iter().map(|l| accepted.iter().position(|p| p == l).unwrap_or(usize::MAX)).min().unwrap_or(usize::MAX)
+fn best(set: &BTreeSet<String>, accepted: &[Accept]) -> usize {
+    set.iter().map(|l| accepted.iter().position(|a| a.license == *l).unwrap_or(usize::MAX)).min().unwrap_or(usize::MAX)
 }
 
 #[derive(Serialize)]
@@ -747,10 +880,14 @@ fn render_manifest(
 mod tests {
     use super::*;
 
-    fn pick(s: &str) -> Option<Vec<String>> {
-        let accepted: Vec<String> = DEFAULT_ACCEPTED.iter().map(|s| s.to_string()).collect();
+    fn pick_with(accepted: &[&str], s: &str) -> Option<Vec<String>> {
+        let acc: Vec<Accept> = accepted.iter().map(|s| parse_accept(s)).collect();
         let e = spdx::Expression::parse_mode(s, spdx::ParseMode::LAX).unwrap();
-        choose(&e, &accepted).map(|set| set.into_iter().collect())
+        choose(&e, &acc).map(|set| set.into_iter().collect())
+    }
+
+    fn pick(s: &str) -> Option<Vec<String>> {
+        pick_with(DEFAULT_ACCEPTED, s)
     }
 
     #[test]
@@ -905,6 +1042,27 @@ mod tests {
         // and attributes the base's text (the exception grants only extra permission).
         assert_eq!(pick("Apache-2.0 WITH LLVM-exception"), Some(vec!["Apache-2.0".into()]));
         assert_eq!(pick("GPL-3.0-only WITH Classpath-exception-2.0"), None); // base not accepted
+    }
+
+    #[test]
+    fn accepted_with_pairing_allows_only_that_pairing() {
+        let acc = &["MIT", "GPL-2.0-only WITH Classpath-exception-2.0"];
+        assert_eq!(pick_with(acc, "GPL-2.0-only WITH Classpath-exception-2.0"), Some(vec!["GPL-2.0-only".into()]));
+        assert_eq!(pick_with(acc, "GPL-2.0-only"), None); // the pairing does not allow the bare license
+        assert_eq!(pick_with(acc, "GPL-2.0-only WITH GCC-exception-2.0"), None); // nor another exception
+        // preference still works: MIT (earlier) beats the pairing in an OR.
+        assert_eq!(pick_with(acc, "(GPL-2.0-only WITH Classpath-exception-2.0) OR MIT"), Some(vec!["MIT".into()]));
+    }
+
+    #[test]
+    fn exception_allow_extends_accepted_per_crate() {
+        // [[exception]] appends its allow list after the global accepted set; simulate
+        // the per-crate composition run() does.
+        let acc = &["MIT", "MPL-2.0"];
+        assert_eq!(pick_with(acc, "MPL-2.0"), Some(vec!["MPL-2.0".into()]));
+        assert_eq!(pick_with(&["MIT"], "MPL-2.0"), None); // without it, rejected
+        // appended entries lose the OR preference to global ones.
+        assert_eq!(pick_with(acc, "MPL-2.0 OR MIT"), Some(vec!["MIT".into()]));
     }
 
     #[test]
