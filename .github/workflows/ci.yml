@@ -16,7 +16,8 @@ jobs:
       - run: rustup update stable && rustup default stable
       - run: rustup component add rustfmt clippy
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
-      # dogfood: the committed LICENSES/ and THIRD-PARTY.md stay current
+      # --all-features so the opt-in --audit code (spdx detection) is linted and tested too
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo test --all-features
+      # dogfood with the default (lean) features: the committed output stays current
       - run: cargo run -- --check

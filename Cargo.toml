@@ -12,13 +12,18 @@ categories = ["development-tools::cargo-plugins"]
 # the preview gif is only for the rendered README; keep it out of the published crate.
 exclude = ["assets"]
 
+[features]
+default = []
+# --audit matches shipped license files against the corpus; it pulls in spdx's text
+# detection (regex, aho-corasick), so it is opt-in. prebuilt release binaries enable it.
+audit = ["spdx/detection"]
+
 [dependencies]
 cargo_metadata = "0.23.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
-# `text` bundles every SPDX license and exception body, so no texts are hand-maintained;
-# `detection` powers --audit (matching the license files crates actually ship).
-spdx = { version = "0.13.4", features = ["text", "detection"] }
+# `text` bundles every SPDX license and exception body, so no texts are hand-maintained.
+spdx = { version = "0.13.4", features = ["text"] }
 toml = "1.1.2"
 
 [dev-dependencies]

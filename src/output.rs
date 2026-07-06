@@ -28,12 +28,19 @@ pub fn is_stale_license(path: &Path, texts: &BTreeMap<&str, String>) -> bool {
 }
 
 // a NOTICES/<name>-<version>.txt cargo-tribute could write that is no longer used.
-// only a stem ending in "-<semver>" is ours; anything else is hand-added and left alone.
+// only a stem that splits into "<name>-<version>" is ours; anything else is hand-added.
 pub fn is_stale_notice(path: &Path, notices: &BTreeMap<String, String>) -> bool {
     path.extension().is_some_and(|x| x == "txt")
-        && path.file_stem().and_then(|s| s.to_str()).is_some_and(|stem| {
-            stem.rsplit_once('-').is_some_and(|(_, v)| Version::parse(v).is_ok()) && !notices.contains_key(stem)
-        })
+        && path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .is_some_and(|stem| notice_stem(stem) && !notices.contains_key(stem))
+}
+
+// the stem is "<name>-<version>"; a semver version may itself contain '-' (pre-release),
+// so accept any '-' split whose suffix parses as a version, not just the last one.
+fn notice_stem(stem: &str) -> bool {
+    stem.match_indices('-').any(|(i, _)| Version::parse(&stem[i + 1..]).is_ok())
 }
 
 // everything the resolve pass produced, in one place for the renderers.
@@ -489,6 +496,8 @@ mod tests {
         assert!(!is_stale_notice(Path::new("N/NOTICE.txt"), &notices));
         assert!(!is_stale_notice(Path::new("N/readme-notes.txt"), &notices));
         assert!(!is_stale_notice(Path::new("N/dep-2.0.0.md"), &notices));
+        // a pre-release version carries its own '-'; still recognized as ours.
+        assert!(is_stale_notice(Path::new("N/dep-1.0.0-rc.1.txt"), &notices));
     }
 
     #[test]

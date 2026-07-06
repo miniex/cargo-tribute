@@ -34,6 +34,8 @@ jobs:
         with:
           bin: cargo-tribute
           target: ${{ matrix.target }}
+          # prebuilt binaries ship with --audit; source `cargo install` is lean by default.
+          features: audit
           archive: $bin-$target
           tar: all
           zip: none

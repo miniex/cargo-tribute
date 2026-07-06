@@ -3,6 +3,7 @@
 //! attribution manifest with copyright lines. `--check` verifies the output is current
 //! and every license is accepted, without writing anything.
 
+#[cfg(feature = "audit")]
 mod audit;
 mod config;
 mod harvest;
@@ -510,9 +511,15 @@ fn run(cli: Cli) -> Result<Output, Failure> {
     }
 
     // --audit reports declared-vs-shipped mismatches and deliberately ignores the
-    // policy gate: it is about what the crates carry, not what we accept.
+    // policy gate: it is about what the crates carry, not what we accept. it needs the
+    // opt-in `audit` feature (text detection); prebuilt release binaries ship with it.
     if cli.audit {
+        #[cfg(feature = "audit")]
         return Ok(Output::Report(audit::run_audit(&deps, &pkg_of, &effective)));
+        #[cfg(not(feature = "audit"))]
+        return Err(Failure::Other(
+            "this build has no --audit; install with `cargo install cargo-tribute --features audit`".into(),
+        ));
     }
 
     if !failures.is_empty() {

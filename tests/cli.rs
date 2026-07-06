@@ -477,6 +477,7 @@ fn skip_private_and_proc_macros_opt_out() {
     fs::remove_dir_all(&dir).ok();
 }
 
+#[cfg(feature = "audit")]
 #[test]
 fn audit_flags_a_mismatched_license_file() {
     // dep declares Zlib but ships the MIT text: --audit must call it out, exit 0.

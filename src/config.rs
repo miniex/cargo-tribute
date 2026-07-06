@@ -84,9 +84,16 @@ pub struct Accept {
     pub exception: Option<String>,
 }
 
+// byte offset of a case-insensitive " WITH " separator; SPDX spells it either case,
+// and LAX parsing accepts both, so the accepted list should too.
+fn find_with(s: &str) -> Option<usize> {
+    let b = s.as_bytes();
+    (0..b.len().saturating_sub(5)).find(|&i| b[i..i + 6].eq_ignore_ascii_case(b" with "))
+}
+
 pub fn parse_accept(s: &str) -> Accept {
-    match s.split_once(" WITH ") {
-        Some((l, e)) => Accept { raw: s.into(), license: l.trim().into(), exception: Some(e.trim().into()) },
+    match find_with(s) {
+        Some(i) => Accept { raw: s.into(), license: s[..i].trim().into(), exception: Some(s[i + 6..].trim().into()) },
         None => Accept { raw: s.into(), license: s.trim().into(), exception: None },
     }
 }
@@ -266,6 +273,17 @@ mod tests {
         assert_eq!(clarify_expr(&c, "foo", &v("1.4.0")), Some("BSD-3-Clause")); // and 1.4.0 (caret req)
         assert_eq!(clarify_expr(&c, "foo", &v("2.0.0")), None); // out of req range
         assert_eq!(clarify_expr(&c, "bar", &v("1.0.0")), None); // name mismatch
+    }
+
+    #[test]
+    fn parse_accept_splits_with_either_case() {
+        let a = parse_accept("GPL-2.0-only WITH Classpath-exception-2.0");
+        assert_eq!((a.license.as_str(), a.exception.as_deref()), ("GPL-2.0-only", Some("Classpath-exception-2.0")));
+        // LAX spells WITH in any case; the accepted list follows.
+        let b = parse_accept("GPL-2.0-only with Classpath-exception-2.0");
+        assert_eq!((b.license.as_str(), b.exception.as_deref()), ("GPL-2.0-only", Some("Classpath-exception-2.0")));
+        let c = parse_accept("MIT");
+        assert_eq!((c.license.as_str(), c.exception.as_deref()), ("MIT", None));
     }
 
     #[test]

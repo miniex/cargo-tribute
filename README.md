@@ -146,6 +146,8 @@ Code the crate graph can't see -- C sources vendored in a `-sys` crate, a bundle
 
 crates.io license metadata is occasionally wrong -- a crate declares `BSD-2-Clause` but ships an extra license file. `cargo tribute --audit` scans each dependency's bundled license files, matches them against the SPDX corpus, and reports files whose best match is not covered by the crate's declared expression. It is advisory only: findings do not fail the run, and near-identical corpus texts (Apache-2.0 vs Pixar) are not reported when the declared license matches about as well.
 
+`--audit` is behind the opt-in `audit` cargo feature (it pulls in text-detection dependencies). The prebuilt release binaries ship with it; a source install needs `cargo install cargo-tribute --features audit`.
+
 ## Reusing a cargo-deny allowlist
 
 Teams already gating licenses with cargo-deny keep the allowlist in `deny.toml`; duplicating it in `tribute.toml` invites drift. `cargo tribute --from-deny deny.toml` takes `[licenses].allow` as the accepted list (WITH pairings included) and maps `[licenses].exceptions` onto per-crate `[[exception]]` entries. Setting `accepted` in tribute.toml at the same time is an error -- keep one source.
