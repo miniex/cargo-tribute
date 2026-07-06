@@ -37,6 +37,10 @@ cargo tribute --locked --check    # forward --locked/--offline/--frozen to cargo
 cargo tribute --all-features      # forward --features/--all-features/--filter-platform too, to
                                   # attribute optional (feature-gated) or platform-specific deps
 cargo tribute --json              # print the resolved attribution as JSON (no files written)
+cargo tribute --format text       # one flat plain-text document: attribution list, license
+                                  # texts, NOTICE bodies (for an "open source licenses" screen)
+cargo tribute --format cyclonedx  # CycloneDX 1.6 SBOM carrying the license texts and
+                                  # per-component copyright (no files written)
 cargo tribute --help
 ```
 
@@ -68,6 +72,7 @@ All of these are good tools; this is where `cargo-tribute` differs (behavior as 
 | Accepted-license gate          | yes                                         | yes (config)             | yes (its focus)       | no              |
 | Per-crate exceptions           | yes (`[[exception]]`)                       | per-crate accepted       | yes (`exceptions`)    | no              |
 | Vendored non-crate code        | yes (`[[extra]]`)                           | no                       | no                    | no              |
+| SBOM output                    | CycloneDX 1.6 with license texts            | no                       | no                    | no              |
 | Staleness `--check` for CI     | yes                                         | no                       | n/a                   | no              |
 | Setup                          | zero-config (optional `tribute.toml`)       | template + `about.toml`  | `deny.toml`           | flags only      |
 
@@ -120,6 +125,10 @@ Each crate's SPDX expression is evaluated against `accepted` (which is also the 
 An `accepted` entry can also be a pairing like `"GPL-2.0-only WITH Classpath-exception-2.0"`, which allows exactly that combination without accepting the bare license. A `[[exception]]` entry allows extra licenses for one named crate only; they lose the OR preference to globally accepted ones. When `accepted` is set explicitly, an entry that no dependency's expression references is warned about, so a stale allowlist stays visible.
 
 Code the crate graph can't see -- C sources vendored in a `-sys` crate, a bundled font -- can be attributed with an `[[extra]]` entry: its expression flows through the same accepted policy, and its licenses join `LICENSES/`, `THIRD-PARTY.md`, and the `--json` report. A license outside the SPDX corpus is named with a `LicenseRef-<id>` expression plus a `[[license-text]]` entry pointing at a local text file, which is copied into the licenses folder (and cleaned up, and `--check`ed) like a canonical text.
+
+## Other output formats
+
+`--format json|text|cyclonedx` prints the resolved attribution to stdout instead of writing files. `text` is one flat plain-text document -- the attribution list, the full license texts, then the NOTICE bodies -- ready for an "open source licenses" screen (save it, commit it, `include_str!` it). `cyclonedx` is a CycloneDX 1.6 SBOM whose components carry the full license texts and a per-component copyright, the fields id-only SBOM generators leave empty; `serialNumber` and `timestamp` are deliberately omitted so the output stays deterministic (same tree, same bytes).
 
 Only normal (runtime) dependencies are attributed by default -- set `include-dev`/`include-build` to attribute (and gate) dev- and build-dependencies too. By default `cargo metadata` resolves the default feature set, so optional (feature-gated) dependencies are not attributed unless you enable them with `--features`/`--all-features`. Canonical license texts (and `WITH` exception texts) come from the [`spdx`](https://crates.io/crates/spdx) crate, so every SPDX license and exception is covered with no texts to hand-maintain.
 

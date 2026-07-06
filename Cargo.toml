@@ -20,6 +20,10 @@ serde_json = "1.0.145"
 spdx = { version = "0.13.4", features = ["text"] }
 toml = "1.1.2"
 
+[dev-dependencies]
+# only to parse the --format cyclonedx output in the e2e tests
+serde_json = "1.0.145"
+
 # cargo-binstall: fetch a prebuilt tarball from the release for tag v{version}
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.tar.gz"

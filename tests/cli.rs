@@ -232,6 +232,62 @@ fn unused_accepted_entry_warns() {
 }
 
 #[test]
+fn format_text_and_cyclonedx_report_without_writing() {
+    // one fixture, both stdout formats: `dep` is MIT with a LICENSE and a NOTICE.
+    let dir = std::env::temp_dir().join(format!("tribute-fmt-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    write(
+        &dir.join("dep/Cargo.toml"),
+        "[package]\nname = \"dep\"\nversion = \"1.0.0\"\nedition = \"2021\"\nlicense = \"MIT\"\n",
+    );
+    write(&dir.join("dep/src/lib.rs"), "");
+    write(&dir.join("dep/LICENSE"), "Copyright (c) 2024 Dep Author\n");
+    write(&dir.join("dep/NOTICE"), "dep notice body\n");
+    write(
+        &dir.join("app/Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\ndep = { path = \"../dep\" }\n",
+    );
+    write(&dir.join("app/src/main.rs"), "fn main() {}\n");
+    let manifest_path = dir.join("app/Cargo.toml");
+
+    // --format text: one flat document with the entry, the license text, and the NOTICE.
+    let out = tribute(&manifest_path, &["--format", "text"]);
+    assert!(out.status.success(), "text failed: {}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("Third-party licenses"), "text:\n{text}");
+    assert!(text.contains("- dep 1.0.0"), "text:\n{text}");
+    assert!(text.contains("Copyright (c) 2024 Dep Author"), "text:\n{text}");
+    assert!(text.contains("Permission is hereby granted"), "MIT body must be included:\n{text}");
+    assert!(text.contains("NOTICE for dep 1.0.0"), "text:\n{text}");
+    assert!(text.contains("dep notice body"), "text:\n{text}");
+
+    // --format cyclonedx: valid JSON carrying the license text and copyright.
+    let out = tribute(&manifest_path, &["--format", "cyclonedx"]);
+    assert!(out.status.success(), "cyclonedx failed: {}", String::from_utf8_lossy(&out.stderr));
+    let bom: serde_json::Value = serde_json::from_slice(&out.stdout).expect("cyclonedx output must be valid JSON");
+    assert_eq!(bom["bomFormat"], "CycloneDX");
+    assert_eq!(bom["specVersion"], "1.6");
+    let comp = &bom["components"][0];
+    assert_eq!(comp["name"], "dep");
+    assert_eq!(comp["version"], "1.0.0");
+    assert!(comp["purl"].is_null(), "a path dep must carry no purl");
+    assert_eq!(comp["licenses"][0]["license"]["id"], "MIT");
+    let body = comp["licenses"][0]["license"]["text"]["content"].as_str().unwrap();
+    assert!(body.contains("Permission is hereby granted"), "license text must be embedded");
+    assert_eq!(comp["copyright"], "Copyright (c) 2024 Dep Author");
+    assert_eq!(comp["properties"][0]["value"], "MIT");
+
+    // neither report mode writes anything.
+    assert!(!dir.join("app/THIRD-PARTY.md").exists());
+    assert!(!dir.join("app/LICENSES").exists());
+
+    // an unknown format is rejected up front.
+    assert!(!tribute(&manifest_path, &["--format", "bogus"]).status.success());
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn features_flag_attributes_optional_deps() {
     // `dep` is pulled in only by the optional `extra` feature. a default run must not
     // attribute it; forwarding `--features extra` to cargo metadata must.

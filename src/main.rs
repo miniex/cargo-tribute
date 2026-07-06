@@ -11,7 +11,10 @@ mod policy;
 use cargo_metadata::{DependencyKind, MetadataCommand, Package, PackageId};
 use config::{Accept, Extra, clarify_expr, load_settings, parse_accept, policy_matches, warn_unknown_ids};
 use harvest::{Extras, harvest_extras};
-use output::{Resolution, io, is_stale_license, is_stale_notice, render_json, render_manifest, stale_outputs};
+use output::{
+    Resolution, io, is_stale_license, is_stale_notice, render_cyclonedx, render_json, render_manifest, render_text,
+    stale_outputs,
+};
 use policy::{canonical_text, choose, exceptions_for, license_name};
 use spdx::expression::ExprNode;
 use std::collections::{BTreeMap, BTreeSet};
@@ -32,41 +35,52 @@ OPTIONS:
         --features <F>       forwarded to `cargo metadata`, to attribute feature-gated
                              deps (also --all-features, --no-default-features,
                              --filter-platform <T>)
-        --json               print the resolved attribution as JSON instead of a summary
+        --json               shorthand for --format json
+        --format <F>         print the resolved attribution as F instead of writing
+                             files: json, text (flat list + full texts, for an
+                             \"open source licenses\" screen), or cyclonedx
+                             (CycloneDX 1.6 SBOM carrying the license texts)
     -h, --help               print this help
     -V, --version            print version
 
 CONFIG (tribute.toml in the project root, all optional):
     accepted = [\"MIT\", \"Apache-2.0\", ...]    # allowed licenses, or \"A WITH B\" pairings;
-                                                 # also the OR preference order
-    include-dev = false                          # also attribute dev-dependencies
-    include-build = false                        # also attribute build-dependencies
-    manifest = \"THIRD-PARTY.md\"                # attribution manifest path
-    licenses-dir = \"LICENSES\"                  # folder for the canonical license texts
-    notices-dir = \"NOTICES\"                    # folder for NOTICE files shipped by dependencies
+                                             # also the OR preference order
+    include-dev = false                      # also attribute dev-dependencies
+    include-build = false                    # also attribute build-dependencies
+    manifest = \"THIRD-PARTY.md\"              # attribution manifest path
+    licenses-dir = \"LICENSES\"                # folder for the canonical license texts
+    notices-dir = \"NOTICES\"                  # folder for NOTICE files shipped by dependencies
 
-    [[clarify]]                                  # override a crate's license (missing/wrong/non-SPDX)
+    [[clarify]]                              # override a crate's license (missing/wrong/non-SPDX)
     name = \"ring\"
-    version = \"0.17.8\"                         # optional semver req; omit to match any version
+    version = \"0.17.8\"                       # optional semver req; omit to match any version
     expression = \"MIT AND ISC AND OpenSSL\"
 
-    [[exception]]                                # allow extra licenses for one crate only
+    [[exception]]                            # allow extra licenses for one crate only
     name = \"unicode-ident\"
     allow = [\"Unicode-DFS-2016\"]
 
-    [[extra]]                                    # attribute non-crate code (vendored C, ...)
+    [[extra]]                                # attribute non-crate code (vendored C, ...)
     name = \"zlib (bundled in libz-sys)\"
     expression = \"Zlib\"
-    url = \"https://zlib.net\"                   # optional, like copyright = \"...\"
+    url = \"https://zlib.net\"                 # optional, like copyright = \"...\"
 
-    [[license-text]]                             # local text for a LicenseRef-* id
+    [[license-text]]                         # local text for a LicenseRef-* id
     id = \"LicenseRef-weird\"
     file = \"licenses-extra/weird.txt\"
 ";
 
+// a stdout report mode: print the resolved attribution instead of writing files.
+enum Format {
+    Json,
+    Text,
+    CycloneDx,
+}
+
 fn main() -> ExitCode {
     let mut check = false;
-    let mut json = false;
+    let mut format = None;
     let mut manifest_path = None;
     // flags forwarded verbatim to `cargo metadata`, e.g. --locked/--offline/--frozen
     // so a CI --check resolves deterministically and offline.
@@ -78,7 +92,20 @@ fn main() -> ExitCode {
     while let Some(a) = args.next() {
         match a.as_str() {
             "--check" => check = true,
-            "--json" => json = true,
+            "--json" => format = Some(Format::Json),
+            "--format" => match args.next().as_deref() {
+                Some("json") => format = Some(Format::Json),
+                Some("text") => format = Some(Format::Text),
+                Some("cyclonedx") => format = Some(Format::CycloneDx),
+                Some(v) => {
+                    eprintln!("cargo-tribute: unknown format '{v}' (expected json, text, or cyclonedx)");
+                    return ExitCode::FAILURE;
+                }
+                None => {
+                    eprintln!("cargo-tribute: --format needs a value");
+                    return ExitCode::FAILURE;
+                }
+            },
             "--manifest-path" => match args.next() {
                 Some(p) => manifest_path = Some(p),
                 None => {
@@ -111,7 +138,7 @@ fn main() -> ExitCode {
             }
         }
     }
-    match run(check, json, manifest_path, cargo_flags) {
+    match run(check, format, manifest_path, cargo_flags) {
         Ok(msg) => {
             println!("{msg}");
             ExitCode::SUCCESS
@@ -123,7 +150,12 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(check: bool, json: bool, manifest_path: Option<String>, cargo_flags: Vec<String>) -> Result<String, String> {
+fn run(
+    check: bool,
+    format: Option<Format>,
+    manifest_path: Option<String>,
+    cargo_flags: Vec<String>,
+) -> Result<String, String> {
     let mut cmd = MetadataCommand::new();
     if let Some(p) = manifest_path {
         cmd.manifest_path(PathBuf::from(p));
@@ -358,9 +390,14 @@ fn run(check: bool, json: bool, manifest_path: Option<String>, cargo_flags: Vec<
         used_exceptions: &used_exceptions,
         extras: &extras,
     };
-    // --json is a read-only report of what the tree resolves to; it never writes or checks.
-    if json {
-        return render_json(&res);
+    // --format/--json is a read-only report of what the tree resolves to; it never
+    // writes or checks.
+    if let Some(f) = format {
+        return match f {
+            Format::Json => render_json(&res),
+            Format::Text => Ok(render_text(&res, &texts)),
+            Format::CycloneDx => render_cyclonedx(&res, &texts),
+        };
     }
     let manifest = render_manifest(&res, &set.licenses_link, &set.notices_link);
 
