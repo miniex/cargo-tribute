@@ -53,7 +53,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: cargo install cargo-tribute   # or: cargo binstall cargo-tribute
+      - run: cargo install cargo-tribute # or: cargo binstall cargo-tribute
       - run: cargo tribute --locked --check
 ```
 
@@ -61,13 +61,13 @@ jobs:
 
 All of these are good tools; this is where `cargo-tribute` differs (behavior as of writing -- check each project's latest docs).
 
-|                             | cargo-tribute                              | cargo-about              | cargo-deny            | cargo-license   |
-| --------------------------- | ------------------------------------------ | ------------------------ | --------------------- | --------------- |
-| Attribution output          | `THIRD-PARTY.md` + REUSE `LICENSES/` folder | one file from a template | none (license linter) | lists to stdout |
-| Copyright lines + NOTICE files | yes                                     | no                       | no                    | authors only    |
-| Accepted-license gate       | yes                                        | yes (config)             | yes (its focus)       | no              |
-| Staleness `--check` for CI  | yes                                        | no                       | n/a                   | no              |
-| Setup                       | zero-config (optional `tribute.toml`)      | template + `about.toml`  | `deny.toml`           | flags only      |
+|                                | cargo-tribute                               | cargo-about              | cargo-deny            | cargo-license   |
+| ------------------------------ | ------------------------------------------- | ------------------------ | --------------------- | --------------- |
+| Attribution output             | `THIRD-PARTY.md` + REUSE `LICENSES/` folder | one file from a template | none (license linter) | lists to stdout |
+| Copyright lines + NOTICE files | yes                                         | no                       | no                    | authors only    |
+| Accepted-license gate          | yes                                         | yes (config)             | yes (its focus)       | no              |
+| Staleness `--check` for CI     | yes                                         | no                       | n/a                   | no              |
+| Setup                          | zero-config (optional `tribute.toml`)       | template + `about.toml`  | `deny.toml`           | flags only      |
 
 Want a broad supply-chain linter (advisories, source bans, duplicate detection)? Reach for `cargo-deny`. `cargo-tribute` stays focused on generating and gating the attribution output.
 
