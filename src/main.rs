@@ -36,7 +36,7 @@ OPTIONS:
         --audit              compare declared licenses against the license files the
                              crates actually ship (advisory report; never fails)
     -p, --package <NAME>     attribute only this workspace member's dependencies
-                             (repeatable; the partial outputs skip orphan cleanup)
+                             (repeatable; report-only, use with --json/--format/--audit)
         --from-deny <PATH>   take the accepted list and per-crate exceptions from a
                              cargo-deny deny.toml [licenses] section
         --manifest-path <P>  path to Cargo.toml (default: auto-detect from the cwd)
@@ -322,6 +322,12 @@ const INIT_TEMPLATE: &str = "\
 fn run(cli: Cli) -> Result<Output, Failure> {
     if cli.init {
         return run_init(&cli);
+    }
+    // -p is a scoped, partial view: allow it only with a stdout report. writing or
+    // --check would clobber (or perpetually fail against) the shared, whole-workspace
+    // LICENSES/NOTICES/manifest.
+    if !cli.packages.is_empty() && cli.format.is_none() && !cli.audit {
+        return Err("-p is a scoped view; use it with --json/--format/--audit, or drop -p for the full run".into());
     }
     let mut cmd = MetadataCommand::new();
     if let Some(p) = &cli.manifest_path {
@@ -642,8 +648,7 @@ fn run(cli: Cli) -> Result<Output, Failure> {
     let manifest = render_manifest(&res, &set.licenses_link, &set.notices_link);
 
     if cli.check {
-        let stale =
-            stale_outputs(&set.licenses_dir, &texts, &set.notices_dir, &notices, &set.manifest, &manifest, !scoped);
+        let stale = stale_outputs(&set.licenses_dir, &texts, &set.notices_dir, &notices, &set.manifest, &manifest);
         if !stale.is_empty() {
             return Err(Failure::Stale(format!("out of date (run `cargo tribute`):\n  {}", stale.join("\n  "))));
         }
@@ -651,13 +656,10 @@ fn run(cli: Cli) -> Result<Output, Failure> {
         let e = if extra_chosen.is_empty() { String::new() } else { format!(", {} extras", extra_chosen.len()) };
         Ok(Output::Summary(format!("up to date: {} license texts{n}, {} crates{e}", texts.len(), deps.len())))
     } else {
-        // a -p run covers only the selected members: leave other members' files alone
-        // (no orphan cleanup) and say so, since the shared outputs are now partial.
-        if scoped {
-            eprintln!("cargo-tribute: note: -p output covers only the selected members; orphan cleanup skipped");
-        }
+        // the write path covers the whole workspace (a scoped -p run is report-only),
+        // so orphan cleanup over the shared folders is always safe here.
         // drop license/exception texts cargo-tribute wrote that are no longer used; leave other files
-        if !scoped && let Ok(entries) = fs::read_dir(&set.licenses_dir) {
+        if let Ok(entries) = fs::read_dir(&set.licenses_dir) {
             for e in entries.flatten() {
                 let p = e.path();
                 if is_stale_license(&p, &texts) {
@@ -667,9 +669,7 @@ fn run(cli: Cli) -> Result<Output, Failure> {
         }
         if texts.is_empty() {
             // nothing to ship: don't leave an empty folder behind (only removes empty).
-            if !scoped {
-                let _ = fs::remove_dir(&set.licenses_dir);
-            }
+            let _ = fs::remove_dir(&set.licenses_dir);
         } else {
             io(&set.licenses_dir, fs::create_dir_all(&set.licenses_dir))?;
             for (id, text) in &texts {
@@ -679,7 +679,7 @@ fn run(cli: Cli) -> Result<Output, Failure> {
         }
         // drop NOTICE files we wrote that are no longer used; keep the folder only
         // while there is something to ship.
-        if !scoped && let Ok(entries) = fs::read_dir(&set.notices_dir) {
+        if let Ok(entries) = fs::read_dir(&set.notices_dir) {
             for e in entries.flatten() {
                 let p = e.path();
                 if is_stale_notice(&p, &notices) {
@@ -688,9 +688,7 @@ fn run(cli: Cli) -> Result<Output, Failure> {
             }
         }
         if notices.is_empty() {
-            if !scoped {
-                let _ = fs::remove_dir(&set.notices_dir); // only removes an empty dir
-            }
+            let _ = fs::remove_dir(&set.notices_dir); // only removes an empty dir
         } else {
             io(&set.notices_dir, fs::create_dir_all(&set.notices_dir))?;
             for (stem, text) in &notices {

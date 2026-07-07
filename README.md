@@ -35,8 +35,8 @@ cargo tribute init                # scaffold a commented tribute.toml
 cargo tribute --check             # verify they are current and every license is accepted
 cargo tribute --audit             # compare declared licenses against the license files the
                                   # crates actually ship (advisory report, never fails)
-cargo tribute -p NAME             # attribute only this workspace member's deps (repeatable;
-                                  # partial outputs: orphan cleanup is skipped)
+cargo tribute -p NAME --json      # attribute only this member's deps (repeatable; report-only,
+                                  # pair with --json/--format/--audit)
 cargo tribute --from-deny deny.toml  # reuse cargo-deny's [licenses] allow list + exceptions
                                   # (a relative path is anchored to the workspace root)
 cargo tribute --manifest-path P   # run against a specific Cargo.toml (writes at its workspace root)

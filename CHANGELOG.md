@@ -6,7 +6,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ### Changed
 
-- A `-p` run no longer orphan-cleans the shared `LICENSES/`/`NOTICES/` folders (files of unselected members would misread as orphans and be deleted) and prints a note that the outputs cover only the selected members; `--check -p` skips the orphan scan the same way, and the unused-accepted/license-text warnings are silenced under `-p`.
+- `-p` is now report-only: it must be paired with `--json`/`--format`/`--audit`, and is rejected on the write path and with `--check`. Those outputs cover the whole workspace, so a scoped `-p` run would otherwise overwrite the shared `THIRD-PARTY.md` with a partial one (and misread other members' `LICENSES/`/`NOTICES/` files as orphans). The unused-accepted/license-text warnings are also silenced under `-p`, since a scoped tree is partial.
 - `--json` and `--format cyclonedx` now report the tree even when the license policy fails: the failures become stderr warnings, and a policy-failed crate appears in the report without resolved licenses. `--format text`, the write path, and `--check` stay gated.
 - A relative `--from-deny` path resolves against the workspace root, like tribute.toml.
 - Clarify/exception no-match warnings consider every package in the graph, so an entry for a crate excluded by `-p` or a skip option no longer warns.

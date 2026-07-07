@@ -6,8 +6,8 @@ Thanks for your interest in cargo-tribute.
 
 ```
 cargo build
-cargo test                     # unit tests + end-to-end tests
-cargo clippy --all-targets     # must be clean
+cargo test --all-features                    # --all-features covers the opt-in --audit code
+cargo clippy --all-targets --all-features    # must be clean
 cargo fmt
 ```
 
@@ -38,7 +38,7 @@ Unit tests live in each module's `tests` submodule; the end-to-end tests in `tes
 
 ## Pull requests
 
-- Keep `cargo fmt` and `cargo clippy --all-targets` clean.
+- Keep `cargo fmt` and `cargo clippy --all-targets --all-features` clean.
 - One focused change per pull request.
 
 ## License

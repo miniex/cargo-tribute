@@ -328,29 +328,21 @@ fn package_selection_limits_the_closure() {
         );
         write(&dir.join(format!("{member}/src/lib.rs")), "");
     }
-    write(&dir.join("depb/NOTICE"), "depb notice\n");
     // a clarify for a crate outside the -p scope is not a typo and must not warn.
     write(&dir.join("tribute.toml"), "[[clarify]]\nname = \"depb\"\nexpression = \"MIT\"\n");
     let manifest_path = dir.join("Cargo.toml");
 
-    // a full run first, so the shared outputs cover both members.
-    assert!(tribute(&manifest_path, &[]).status.success());
-    assert!(dir.join("NOTICES/depb-1.0.0.txt").exists());
-
-    let out = tribute(&manifest_path, &["-p", "a"]);
-    assert!(out.status.success(), "-p a failed: {}", String::from_utf8_lossy(&out.stderr));
-    let manifest = fs::read_to_string(dir.join("THIRD-PARTY.md")).unwrap();
-    assert!(manifest.contains("depa"), "manifest:\n{manifest}");
-    assert!(!manifest.contains("depb"), "-p a must exclude b's deps:\n{manifest}");
-
-    // the scoped run must not delete the other member's files, and it says so.
-    assert!(dir.join("NOTICES/depb-1.0.0.txt").exists(), "-p must not orphan-clean other members' notices");
+    // -p is report-only: the json for `-p a` carries a's dep, not b's.
+    let out = tribute(&manifest_path, &["-p", "a", "--json"]);
+    assert!(out.status.success(), "-p a --json failed: {}", String::from_utf8_lossy(&out.stderr));
+    let report = String::from_utf8_lossy(&out.stdout);
+    assert!(report.contains("depa"), "report:\n{report}");
+    assert!(!report.contains("depb"), "-p a must exclude b's deps:\n{report}");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("selected members"), "stderr:\n{stderr}");
     assert!(!stderr.contains("matched no dependency"), "out-of-scope clarify must not warn:\n{stderr}");
 
     // an unknown member is an error, not a silently empty run.
-    assert!(!tribute(&manifest_path, &["-p", "nope"]).status.success());
+    assert!(!tribute(&manifest_path, &["-p", "nope", "--json"]).status.success());
 
     fs::remove_dir_all(&dir).ok();
 }
@@ -535,6 +527,24 @@ fn skip_private_and_proc_macros_opt_out() {
     assert!(tribute(&manifest_path, &[]).status.success());
     let manifest = fs::read_to_string(dir.join("app/THIRD-PARTY.md")).unwrap();
     assert!(!manifest.contains("dep 1.0.0"), "manifest:\n{manifest}");
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn package_flag_is_report_only() {
+    // -p is a scoped, partial view: it must refuse to write or --check the shared
+    // whole-workspace outputs, but still work as a stdout report.
+    let dir = std::env::temp_dir().join(format!("tribute-p-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    let manifest_path = write_app(&dir, "MIT");
+
+    let out = tribute(&manifest_path, &["-p", "app"]);
+    assert!(!out.status.success(), "-p write must be rejected");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("scoped view"), "stderr:\n{err}");
+    assert!(!tribute(&manifest_path, &["-p", "app", "--check"]).status.success(), "-p --check must be rejected");
+    assert!(tribute(&manifest_path, &["-p", "app", "--json"]).status.success(), "-p --json must work");
 
     fs::remove_dir_all(&dir).ok();
 }

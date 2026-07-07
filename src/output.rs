@@ -144,9 +144,9 @@ fn matches_output(disk: Option<String>, want: &str) -> bool {
 }
 
 // paths a plain run would create, change, or delete; empty means --check passes.
-// includes orphaned license/notice files the write path removes (skipped under -p,
-// where files of unselected members would misread as orphans), so --check cannot
-// pass while stale files still sit in the tree.
+// includes orphaned license/notice files the write path removes, so --check cannot
+// pass while stale files still sit in the tree. --check always covers the whole
+// workspace (a scoped -p run is report-only), so orphan scanning is unconditional.
 pub fn stale_outputs(
     licenses_dir: &Path,
     texts: &BTreeMap<&str, String>,
@@ -154,7 +154,6 @@ pub fn stale_outputs(
     notices: &BTreeMap<String, String>,
     manifest_path: &Path,
     manifest: &str,
-    scan_orphans: bool,
 ) -> Vec<String> {
     let mut stale = Vec::new();
     for (id, want) in texts {
@@ -163,7 +162,7 @@ pub fn stale_outputs(
             stale.push(path.display().to_string());
         }
     }
-    if scan_orphans && let Ok(entries) = fs::read_dir(licenses_dir) {
+    if let Ok(entries) = fs::read_dir(licenses_dir) {
         for e in entries.flatten() {
             let p = e.path();
             if is_stale_license(&p, texts) {
@@ -177,7 +176,7 @@ pub fn stale_outputs(
             stale.push(path.display().to_string());
         }
     }
-    if scan_orphans && let Ok(entries) = fs::read_dir(notices_dir) {
+    if let Ok(entries) = fs::read_dir(notices_dir) {
         for e in entries.flatten() {
             let p = e.path();
             if is_stale_notice(&p, notices) {
@@ -458,7 +457,7 @@ mod tests {
         notices.insert("dep-1.0.0".into(), "DEP NOTICE".into());
 
         // nothing on disk yet: wanted license, notice, and manifest all report stale.
-        let stale = stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST", true);
+        let stale = stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST");
         assert!(stale.iter().any(|s| s.contains("MIT.txt")));
         assert!(stale.iter().any(|s| s.contains("dep-1.0.0.txt")));
         assert!(stale.iter().any(|s| s.contains("THIRD-PARTY.md")));
@@ -467,22 +466,22 @@ mod tests {
         fs::write(lic.join("MIT.txt"), "MIT TEXT").unwrap();
         fs::write(not.join("dep-1.0.0.txt"), "DEP NOTICE").unwrap();
         fs::write(&manifest_path, "MANIFEST").unwrap();
-        assert!(stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST", true).is_empty());
+        assert!(stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST").is_empty());
 
         // a leftover bundled-license text not in the wanted set is stale (we wrote it).
         fs::write(lic.join("Apache-2.0.txt"), "x").unwrap();
-        let stale = stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST", true);
+        let stale = stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST");
         assert!(stale.iter().any(|s| s.contains("Apache-2.0.txt")));
         fs::remove_file(lic.join("Apache-2.0.txt")).unwrap();
 
         // a hand-added file whose stem is not an SPDX id is left alone.
         fs::write(lic.join("NOTICE.txt"), "x").unwrap();
-        let stale = stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST", true);
+        let stale = stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST");
         assert!(!stale.iter().any(|s| s.contains("NOTICE.txt")));
 
         // an unused LicenseRef-* text is ours (copied from [[license-text]]) -> stale.
         fs::write(lic.join("LicenseRef-old.txt"), "x").unwrap();
-        let stale = stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST", true);
+        let stale = stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST");
         assert!(stale.iter().any(|s| s.contains("LicenseRef-old.txt")));
         fs::remove_file(lic.join("LicenseRef-old.txt")).unwrap();
 
@@ -490,7 +489,7 @@ mod tests {
         // but a hand-added file without a "-<semver>" stem suffix is left alone.
         fs::write(not.join("gone-2.0.0.txt"), "x").unwrap();
         fs::write(not.join("README.txt"), "x").unwrap();
-        let stale = stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST", true);
+        let stale = stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST");
         assert!(stale.iter().any(|s| s.contains("gone-2.0.0.txt")));
         assert!(!stale.iter().any(|s| s.contains("README.txt")));
 
