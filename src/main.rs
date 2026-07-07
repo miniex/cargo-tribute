@@ -36,7 +36,7 @@ OPTIONS:
         --audit              compare declared licenses against the license files the
                              crates actually ship (advisory report; never fails)
     -p, --package <NAME>     attribute only this workspace member's dependencies
-                             (repeatable; default: all members)
+                             (repeatable; the partial outputs skip orphan cleanup)
         --from-deny <PATH>   take the accepted list and per-crate exceptions from a
                              cargo-deny deny.toml [licenses] section
         --manifest-path <P>  path to Cargo.toml (default: auto-detect from the cwd)
@@ -91,6 +91,15 @@ enum Format {
     Json,
     Text,
     CycloneDx,
+}
+
+fn parse_format(v: &str) -> Option<Format> {
+    match v {
+        "json" => Some(Format::Json),
+        "text" => Some(Format::Text),
+        "cyclonedx" => Some(Format::CycloneDx),
+        _ => None,
+    }
 }
 
 // what run() produced: a report always goes to stdout, a summary only without -q.
@@ -156,14 +165,14 @@ fn main() -> ExitCode {
             "--audit" => cli.audit = true,
             "-q" | "--quiet" => cli.quiet = true,
             "--json" => cli.format = Some(Format::Json),
-            "--format" => match args.next().as_deref() {
-                Some("json") => cli.format = Some(Format::Json),
-                Some("text") => cli.format = Some(Format::Text),
-                Some("cyclonedx") => cli.format = Some(Format::CycloneDx),
-                Some(v) => {
-                    eprintln!("cargo-tribute: unknown format '{v}' (expected json, text, or cyclonedx)");
-                    return ExitCode::FAILURE;
-                }
+            "--format" => match args.next().as_deref().map(str::to_owned) {
+                Some(v) => match parse_format(&v) {
+                    Some(f) => cli.format = Some(f),
+                    None => {
+                        eprintln!("cargo-tribute: unknown format '{v}' (expected json, text, or cyclonedx)");
+                        return ExitCode::FAILURE;
+                    }
+                },
                 None => {
                     eprintln!("cargo-tribute: --format needs a value");
                     return ExitCode::FAILURE;
@@ -209,8 +218,21 @@ fn main() -> ExitCode {
                 println!("cargo-tribute {}", env!("CARGO_PKG_VERSION"));
                 return ExitCode::SUCCESS;
             }
-            // accept the `--features=foo`/`--filter-platform=foo` spellings cargo also takes.
+            // accept the `--flag=value` spellings cargo also takes.
             _ if a.starts_with("--features=") || a.starts_with("--filter-platform=") => cli.cargo_flags.push(a),
+            _ if a.starts_with("--format=") => match parse_format(&a["--format=".len()..]) {
+                Some(f) => cli.format = Some(f),
+                None => {
+                    eprintln!(
+                        "cargo-tribute: unknown format '{}' (expected json, text, or cyclonedx)",
+                        &a["--format=".len()..]
+                    );
+                    return ExitCode::FAILURE;
+                }
+            },
+            _ if a.starts_with("--manifest-path=") => cli.manifest_path = Some(a["--manifest-path=".len()..].into()),
+            _ if a.starts_with("--package=") => cli.packages.push(a["--package=".len()..].into()),
+            _ if a.starts_with("--from-deny=") => cli.from_deny = Some(a["--from-deny=".len()..].into()),
             other => {
                 eprintln!("cargo-tribute: unknown argument '{other}' (try --help)");
                 return ExitCode::FAILURE;
@@ -242,10 +264,14 @@ fn main() -> ExitCode {
 }
 
 // scaffold a commented tribute.toml at the workspace root; refuses to overwrite.
-fn run_init(manifest_path: Option<String>) -> Result<Output, Failure> {
+fn run_init(cli: &Cli) -> Result<Output, Failure> {
     let mut cmd = MetadataCommand::new();
-    if let Some(p) = manifest_path {
+    if let Some(p) = &cli.manifest_path {
         cmd.manifest_path(PathBuf::from(p));
+    }
+    // forward --locked/--offline/--frozen, so init works where the tree resolves.
+    if !cli.cargo_flags.is_empty() {
+        cmd.other_options(cli.cargo_flags.clone());
     }
     let meta = cmd.exec().map_err(|e| e.to_string())?;
     let path = meta.workspace_root.join("tribute.toml");
@@ -295,7 +321,7 @@ const INIT_TEMPLATE: &str = "\
 
 fn run(cli: Cli) -> Result<Output, Failure> {
     if cli.init {
-        return run_init(cli.manifest_path);
+        return run_init(&cli);
     }
     let mut cmd = MetadataCommand::new();
     if let Some(p) = &cli.manifest_path {
@@ -307,7 +333,10 @@ fn run(cli: Cli) -> Result<Output, Failure> {
     let meta = cmd.exec().map_err(|e| e.to_string())?;
     let mut set = load_settings(&meta.workspace_root)?;
     if let Some(p) = &cli.from_deny {
-        apply_deny(&mut set, Path::new(p))?;
+        // like tribute.toml, a relative deny.toml is anchored to the workspace root.
+        let p = Path::new(p);
+        let p = if p.is_absolute() { p.to_path_buf() } else { meta.workspace_root.as_std_path().join(p) };
+        apply_deny(&mut set, &p)?;
     }
     let set = set;
     // a typo in a policy entry (e.g. "Apache2.0") would silently reject that license; flag it.
@@ -482,11 +511,11 @@ fn run(cli: Cli) -> Result<Output, Failure> {
         }
     }
     // warn on clarify/exception entries that matched no dependency, so a typo in name
-    // or version is visible instead of silently ignored.
+    // or version is visible instead of silently ignored. matched against every package
+    // in the graph, not just the attributed deps, so an entry for a crate excluded by
+    // -p or a skip option does not read as a typo.
     let no_match = |name: &str, version: Option<&str>| {
-        !deps
-            .iter()
-            .any(|id| pkg_of.get(id).is_some_and(|p| policy_matches(name, version, p.name.as_ref(), &p.version)))
+        !meta.packages.iter().any(|p| policy_matches(name, version, p.name.as_ref(), &p.version))
     };
     for c in &set.clarify {
         if no_match(&c.name, c.version.as_deref()) {
@@ -501,8 +530,10 @@ fn run(cli: Cli) -> Result<Output, Failure> {
         }
     }
     // warn on accepted entries no dependency even references, so a stale allowlist is
-    // visible. explicit lists only; the built-in default may sit partly unused.
-    if set.accepted_explicit {
+    // visible. explicit lists only, and not under -p: a scoped run sees a partial
+    // tree, so "unused" would be noise.
+    let scoped = !cli.packages.is_empty();
+    if set.accepted_explicit && !scoped {
         for a in &set.accepted {
             if !encountered.iter().any(|(l, e)| a.allows(l, e.as_deref())) {
                 eprintln!("cargo-tribute: warning: accepted license '{}' matched no dependency", a.raw);
@@ -523,7 +554,17 @@ fn run(cli: Cli) -> Result<Output, Failure> {
     }
 
     if !failures.is_empty() {
-        return Err(Failure::Policy(format!("license policy failed:\n  {}", failures.join("\n  "))));
+        match cli.format {
+            // json/cyclonedx describe the tree as it is (an SBOM of an unaccepted
+            // tree is still an SBOM); the failures downgrade to warnings. text and
+            // the write path are attribution deliverables and stay gated.
+            Some(Format::Json) | Some(Format::CycloneDx) => {
+                for f in &failures {
+                    eprintln!("cargo-tribute: warning: {f}");
+                }
+            }
+            _ => return Err(Failure::Policy(format!("license policy failed:\n  {}", failures.join("\n  ")))),
+        }
     }
 
     // per-crate copyright lines and NOTICE bodies, from the local sources.
@@ -533,7 +574,20 @@ fn run(cli: Cli) -> Result<Output, Failure> {
         let Some(&pkg) = pkg_of.get(id) else { continue };
         let x = harvest_extras(pkg);
         if let Some(n) = &x.notice {
-            notices.insert(format!("{}-{}", pkg.name, pkg.version), n.clone());
+            // two packages can share a name-version stem (a registry dep plus a git
+            // fork); ship both bodies under the one file instead of dropping one.
+            use std::collections::btree_map::Entry;
+            match notices.entry(format!("{}-{}", pkg.name, pkg.version)) {
+                Entry::Vacant(v) => {
+                    v.insert(n.clone());
+                }
+                Entry::Occupied(mut o) => {
+                    if o.get() != n {
+                        o.get_mut().push('\n');
+                        o.get_mut().push_str(n);
+                    }
+                }
+            }
         }
         extras.insert(*id, x);
     }
@@ -588,7 +642,8 @@ fn run(cli: Cli) -> Result<Output, Failure> {
     let manifest = render_manifest(&res, &set.licenses_link, &set.notices_link);
 
     if cli.check {
-        let stale = stale_outputs(&set.licenses_dir, &texts, &set.notices_dir, &notices, &set.manifest, &manifest);
+        let stale =
+            stale_outputs(&set.licenses_dir, &texts, &set.notices_dir, &notices, &set.manifest, &manifest, !scoped);
         if !stale.is_empty() {
             return Err(Failure::Stale(format!("out of date (run `cargo tribute`):\n  {}", stale.join("\n  "))));
         }
@@ -596,9 +651,13 @@ fn run(cli: Cli) -> Result<Output, Failure> {
         let e = if extra_chosen.is_empty() { String::new() } else { format!(", {} extras", extra_chosen.len()) };
         Ok(Output::Summary(format!("up to date: {} license texts{n}, {} crates{e}", texts.len(), deps.len())))
     } else {
-        io(&set.licenses_dir, fs::create_dir_all(&set.licenses_dir))?;
+        // a -p run covers only the selected members: leave other members' files alone
+        // (no orphan cleanup) and say so, since the shared outputs are now partial.
+        if scoped {
+            eprintln!("cargo-tribute: note: -p output covers only the selected members; orphan cleanup skipped");
+        }
         // drop license/exception texts cargo-tribute wrote that are no longer used; leave other files
-        if let Ok(entries) = fs::read_dir(&set.licenses_dir) {
+        if !scoped && let Ok(entries) = fs::read_dir(&set.licenses_dir) {
             for e in entries.flatten() {
                 let p = e.path();
                 if is_stale_license(&p, &texts) {
@@ -606,13 +665,21 @@ fn run(cli: Cli) -> Result<Output, Failure> {
                 }
             }
         }
-        for (id, text) in &texts {
-            let p = set.licenses_dir.join(format!("{id}.txt"));
-            io(&p, fs::write(&p, text))?;
+        if texts.is_empty() {
+            // nothing to ship: don't leave an empty folder behind (only removes empty).
+            if !scoped {
+                let _ = fs::remove_dir(&set.licenses_dir);
+            }
+        } else {
+            io(&set.licenses_dir, fs::create_dir_all(&set.licenses_dir))?;
+            for (id, text) in &texts {
+                let p = set.licenses_dir.join(format!("{id}.txt"));
+                io(&p, fs::write(&p, text))?;
+            }
         }
         // drop NOTICE files we wrote that are no longer used; keep the folder only
         // while there is something to ship.
-        if let Ok(entries) = fs::read_dir(&set.notices_dir) {
+        if !scoped && let Ok(entries) = fs::read_dir(&set.notices_dir) {
             for e in entries.flatten() {
                 let p = e.path();
                 if is_stale_notice(&p, &notices) {
@@ -621,7 +688,9 @@ fn run(cli: Cli) -> Result<Output, Failure> {
             }
         }
         if notices.is_empty() {
-            let _ = fs::remove_dir(&set.notices_dir); // only removes an empty dir
+            if !scoped {
+                let _ = fs::remove_dir(&set.notices_dir); // only removes an empty dir
+            }
         } else {
             io(&set.notices_dir, fs::create_dir_all(&set.notices_dir))?;
             for (stem, text) in &notices {

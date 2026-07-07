@@ -39,8 +39,13 @@ pub fn is_stale_notice(path: &Path, notices: &BTreeMap<String, String>) -> bool 
 
 // the stem is "<name>-<version>"; a semver version may itself contain '-' (pre-release),
 // so accept any '-' split whose suffix parses as a version, not just the last one.
+// a bare-word pre-release ("1.0.0-agenda") is more likely a hand-added file, so a
+// pre-release only counts with a digit ("-rc.1"); a digitless one lingers instead.
 fn notice_stem(stem: &str) -> bool {
-    stem.match_indices('-').any(|(i, _)| Version::parse(&stem[i + 1..]).is_ok())
+    stem.match_indices('-').any(|(i, _)| {
+        Version::parse(&stem[i + 1..])
+            .is_ok_and(|v| v.pre.is_empty() || v.pre.as_str().chars().any(|c| c.is_ascii_digit()))
+    })
 }
 
 // everything the resolve pass produced, in one place for the renderers.
@@ -91,13 +96,13 @@ pub fn render_json(r: &Resolution) -> Result<String, String> {
         .iter()
         .filter_map(|id| {
             let pkg = r.pkg_of.get(id).copied()?;
-            let chosen = r.chosen_of.get(*id)?;
             let x = r.extras.get(*id);
             Some(CrateEntry {
                 name: pkg.name.as_ref(),
                 version: pkg.version.to_string(),
                 expression: r.effective.get(*id).copied().unwrap_or(""),
-                licenses: chosen.iter().map(String::as_str).collect(),
+                // a policy-failed crate still appears, with no resolved licenses.
+                licenses: r.chosen_of.get(*id).map(|c| c.iter().map(String::as_str).collect()).unwrap_or_default(),
                 authors: x.map(|x| x.authors.as_slice()).unwrap_or(&[]),
                 copyrights: x.map(|x| x.copyrights.as_slice()).unwrap_or(&[]),
                 notice: x.and_then(|x| x.notice.as_deref()),
@@ -139,7 +144,8 @@ fn matches_output(disk: Option<String>, want: &str) -> bool {
 }
 
 // paths a plain run would create, change, or delete; empty means --check passes.
-// includes orphaned license/notice files the write path removes, so --check cannot
+// includes orphaned license/notice files the write path removes (skipped under -p,
+// where files of unselected members would misread as orphans), so --check cannot
 // pass while stale files still sit in the tree.
 pub fn stale_outputs(
     licenses_dir: &Path,
@@ -148,6 +154,7 @@ pub fn stale_outputs(
     notices: &BTreeMap<String, String>,
     manifest_path: &Path,
     manifest: &str,
+    scan_orphans: bool,
 ) -> Vec<String> {
     let mut stale = Vec::new();
     for (id, want) in texts {
@@ -156,7 +163,7 @@ pub fn stale_outputs(
             stale.push(path.display().to_string());
         }
     }
-    if let Ok(entries) = fs::read_dir(licenses_dir) {
+    if scan_orphans && let Ok(entries) = fs::read_dir(licenses_dir) {
         for e in entries.flatten() {
             let p = e.path();
             if is_stale_license(&p, texts) {
@@ -170,7 +177,7 @@ pub fn stale_outputs(
             stale.push(path.display().to_string());
         }
     }
-    if let Ok(entries) = fs::read_dir(notices_dir) {
+    if scan_orphans && let Ok(entries) = fs::read_dir(notices_dir) {
         for e in entries.flatten() {
             let p = e.path();
             if is_stale_notice(&p, notices) {
@@ -378,13 +385,16 @@ fn cdx_copyright(x: &Extras) -> Option<String> {
 pub fn render_cyclonedx(r: &Resolution, texts: &BTreeMap<&str, String>) -> Result<String, String> {
     let mut components: Vec<serde_json::Value> = Vec::new();
     for id in r.deps {
-        let (Some(&pkg), Some(chosen)) = (r.pkg_of.get(id), r.chosen_of.get(id)) else { continue };
+        let Some(&pkg) = r.pkg_of.get(id) else { continue };
         let mut comp = serde_json::json!({
             "type": "library",
             "name": pkg.name.as_ref() as &str,
             "version": pkg.version.to_string(),
-            "licenses": cdx_licenses(chosen, texts),
         });
+        // a policy-failed crate still appears, just without resolved licenses.
+        if let Some(chosen) = r.chosen_of.get(id) {
+            comp["licenses"] = cdx_licenses(chosen, texts);
+        }
         // a purl names a registry package; a path or git dep has none.
         if pkg.source.as_ref().is_some_and(|s| s.is_crates_io()) {
             comp["purl"] = serde_json::json!(format!("pkg:cargo/{}@{}", pkg.name, pkg.version));
@@ -448,7 +458,7 @@ mod tests {
         notices.insert("dep-1.0.0".into(), "DEP NOTICE".into());
 
         // nothing on disk yet: wanted license, notice, and manifest all report stale.
-        let stale = stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST");
+        let stale = stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST", true);
         assert!(stale.iter().any(|s| s.contains("MIT.txt")));
         assert!(stale.iter().any(|s| s.contains("dep-1.0.0.txt")));
         assert!(stale.iter().any(|s| s.contains("THIRD-PARTY.md")));
@@ -457,22 +467,22 @@ mod tests {
         fs::write(lic.join("MIT.txt"), "MIT TEXT").unwrap();
         fs::write(not.join("dep-1.0.0.txt"), "DEP NOTICE").unwrap();
         fs::write(&manifest_path, "MANIFEST").unwrap();
-        assert!(stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST").is_empty());
+        assert!(stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST", true).is_empty());
 
         // a leftover bundled-license text not in the wanted set is stale (we wrote it).
         fs::write(lic.join("Apache-2.0.txt"), "x").unwrap();
-        let stale = stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST");
+        let stale = stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST", true);
         assert!(stale.iter().any(|s| s.contains("Apache-2.0.txt")));
         fs::remove_file(lic.join("Apache-2.0.txt")).unwrap();
 
         // a hand-added file whose stem is not an SPDX id is left alone.
         fs::write(lic.join("NOTICE.txt"), "x").unwrap();
-        let stale = stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST");
+        let stale = stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST", true);
         assert!(!stale.iter().any(|s| s.contains("NOTICE.txt")));
 
         // an unused LicenseRef-* text is ours (copied from [[license-text]]) -> stale.
         fs::write(lic.join("LicenseRef-old.txt"), "x").unwrap();
-        let stale = stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST");
+        let stale = stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST", true);
         assert!(stale.iter().any(|s| s.contains("LicenseRef-old.txt")));
         fs::remove_file(lic.join("LicenseRef-old.txt")).unwrap();
 
@@ -480,7 +490,7 @@ mod tests {
         // but a hand-added file without a "-<semver>" stem suffix is left alone.
         fs::write(not.join("gone-2.0.0.txt"), "x").unwrap();
         fs::write(not.join("README.txt"), "x").unwrap();
-        let stale = stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST");
+        let stale = stale_outputs(&lic, &texts, &not, &notices, &manifest_path, "MANIFEST", true);
         assert!(stale.iter().any(|s| s.contains("gone-2.0.0.txt")));
         assert!(!stale.iter().any(|s| s.contains("README.txt")));
 
@@ -498,6 +508,8 @@ mod tests {
         assert!(!is_stale_notice(Path::new("N/dep-2.0.0.md"), &notices));
         // a pre-release version carries its own '-'; still recognized as ours.
         assert!(is_stale_notice(Path::new("N/dep-1.0.0-rc.1.txt"), &notices));
+        // a bare-word pre-release is treated as hand-added, not deleted.
+        assert!(!is_stale_notice(Path::new("N/meeting-1.0.0-agenda.txt"), &notices));
     }
 
     #[test]

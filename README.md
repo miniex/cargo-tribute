@@ -35,8 +35,10 @@ cargo tribute init                # scaffold a commented tribute.toml
 cargo tribute --check             # verify they are current and every license is accepted
 cargo tribute --audit             # compare declared licenses against the license files the
                                   # crates actually ship (advisory report, never fails)
-cargo tribute -p NAME             # attribute only this workspace member's deps (repeatable)
+cargo tribute -p NAME             # attribute only this workspace member's deps (repeatable;
+                                  # partial outputs: orphan cleanup is skipped)
 cargo tribute --from-deny deny.toml  # reuse cargo-deny's [licenses] allow list + exceptions
+                                  # (a relative path is anchored to the workspace root)
 cargo tribute --manifest-path P   # run against a specific Cargo.toml (writes at its workspace root)
 cargo tribute --locked --check    # forward --locked/--offline/--frozen to cargo metadata (for CI)
 cargo tribute --all-features      # forward --features/--all-features/--filter-platform too, to
@@ -132,7 +134,7 @@ file = "licenses-extra/weird.txt"
 
 ## How a license is chosen
 
-Each crate's SPDX expression is evaluated against `accepted` (which is also the OR preference order): for `A OR B` it picks the preferred accepted license, for `A AND B` it keeps both. Legacy `/`-separated expressions (`MIT/Apache-2.0`) are accepted. A crate whose expression cannot be satisfied from the accepted set is a hard error.
+Each crate's SPDX expression is evaluated against `accepted` (which is also the OR preference order): for `A OR B` it picks the preferred accepted license, for `A AND B` it keeps both. Legacy `/`-separated expressions (`MIT/Apache-2.0`) are accepted, and an or-later `+` suffix is treated as its base license (`GPL-2.0+` matches an accepted `GPL-2.0`, and attributes that text). A crate whose expression cannot be satisfied from the accepted set is a hard error.
 
 An `accepted` entry can also be a pairing like `"GPL-2.0-only WITH Classpath-exception-2.0"`, which allows exactly that combination without accepting the bare license. A `[[exception]]` entry allows extra licenses for one named crate only; they lose the OR preference to globally accepted ones. When `accepted` is set explicitly, an entry that no dependency's expression references is warned about, so a stale allowlist stays visible.
 
@@ -140,7 +142,7 @@ Code the crate graph can't see -- C sources vendored in a `-sys` crate, a bundle
 
 ## Other output formats
 
-`--format json|text|cyclonedx` prints the resolved attribution to stdout instead of writing files. `text` is one flat plain-text document -- the attribution list, the full license texts, then the NOTICE bodies -- ready for an "open source licenses" screen (save it, commit it, `include_str!` it). `cyclonedx` is a CycloneDX 1.6 SBOM whose components carry the full license texts and a per-component copyright, the fields id-only SBOM generators leave empty; `serialNumber` and `timestamp` are deliberately omitted so the output stays deterministic (same tree, same bytes).
+`--format json|text|cyclonedx` prints the resolved attribution to stdout instead of writing files. `text` is one flat plain-text document -- the attribution list, the full license texts, then the NOTICE bodies -- ready for an "open source licenses" screen (save it, commit it, `include_str!` it). `cyclonedx` is a CycloneDX 1.6 SBOM whose components carry the full license texts and a per-component copyright, the fields id-only SBOM generators leave empty; `serialNumber` and `timestamp` are deliberately omitted so the output stays deterministic (same tree, same bytes). `json` and `cyclonedx` report the tree even when the license policy fails (the failures become stderr warnings and the crate appears without resolved licenses); `text` is an attribution deliverable and stays gated, like the write path.
 
 ## Auditing declared licenses
 

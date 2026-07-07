@@ -2,6 +2,24 @@
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Dates are KST (UTC+9).
 
+## [Unreleased]
+
+### Changed
+
+- A `-p` run no longer orphan-cleans the shared `LICENSES/`/`NOTICES/` folders (files of unselected members would misread as orphans and be deleted) and prints a note that the outputs cover only the selected members; `--check -p` skips the orphan scan the same way, and the unused-accepted/license-text warnings are silenced under `-p`.
+- `--json` and `--format cyclonedx` now report the tree even when the license policy fails: the failures become stderr warnings, and a policy-failed crate appears in the report without resolved licenses. `--format text`, the write path, and `--check` stay gated.
+- A relative `--from-deny` path resolves against the workspace root, like tribute.toml.
+- Clarify/exception no-match warnings consider every package in the graph, so an entry for a crate excluded by `-p` or a skip option no longer warns.
+- A tree with nothing to attribute no longer leaves an empty `LICENSES/` folder behind.
+
+### Fixed
+
+- A hand-added NOTICES file like `meeting-1.0.0-agenda.txt` is no longer deleted as an orphan: a `-<semver>` stem only counts as ours when its pre-release part carries a digit (`-rc.1`), not a bare word. The rare digitless pre-release notice lingers instead of risking someone's file.
+- `cargo tribute init` forwards `--locked`/`--offline`/`--frozen` to `cargo metadata` instead of ignoring them.
+- A `WITH` exception on a `LicenseRef-*` base license now ships its exception text too.
+- Two packages sharing a name and version (a registry dep plus a git fork) merge their NOTICE bodies instead of one silently overwriting the other.
+- The `--format=F`, `--manifest-path=P`, `--package=N`, and `--from-deny=P` spellings are accepted, like the forwarded cargo flags.
+
 ## [0.7.0] - 2026-07-06
 
 ### Added
@@ -124,7 +142,7 @@ First release.
 - Flags: `--manifest-path`, `--help`, `--version`.
 - Bundled canonical texts: MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, 0BSD, Zlib, Unlicense, Unicode-3.0.
 
-[unreleased]: https://github.com/miniex/cargo-tribute/compare/v0.6.0...HEAD
+[unreleased]: https://github.com/miniex/cargo-tribute/compare/v0.7.0...HEAD
 [0.7.0]: https://github.com/miniex/cargo-tribute/releases/tag/v0.7.0
 [0.6.0]: https://github.com/miniex/cargo-tribute/releases/tag/v0.6.0
 [0.5.1]: https://github.com/miniex/cargo-tribute/releases/tag/v0.5.1

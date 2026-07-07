@@ -328,13 +328,26 @@ fn package_selection_limits_the_closure() {
         );
         write(&dir.join(format!("{member}/src/lib.rs")), "");
     }
+    write(&dir.join("depb/NOTICE"), "depb notice\n");
+    // a clarify for a crate outside the -p scope is not a typo and must not warn.
+    write(&dir.join("tribute.toml"), "[[clarify]]\nname = \"depb\"\nexpression = \"MIT\"\n");
     let manifest_path = dir.join("Cargo.toml");
+
+    // a full run first, so the shared outputs cover both members.
+    assert!(tribute(&manifest_path, &[]).status.success());
+    assert!(dir.join("NOTICES/depb-1.0.0.txt").exists());
 
     let out = tribute(&manifest_path, &["-p", "a"]);
     assert!(out.status.success(), "-p a failed: {}", String::from_utf8_lossy(&out.stderr));
     let manifest = fs::read_to_string(dir.join("THIRD-PARTY.md")).unwrap();
     assert!(manifest.contains("depa"), "manifest:\n{manifest}");
     assert!(!manifest.contains("depb"), "-p a must exclude b's deps:\n{manifest}");
+
+    // the scoped run must not delete the other member's files, and it says so.
+    assert!(dir.join("NOTICES/depb-1.0.0.txt").exists(), "-p must not orphan-clean other members' notices");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("selected members"), "stderr:\n{stderr}");
+    assert!(!stderr.contains("matched no dependency"), "out-of-scope clarify must not warn:\n{stderr}");
 
     // an unknown member is an error, not a silently empty run.
     assert!(!tribute(&manifest_path, &["-p", "nope"]).status.success());
@@ -352,8 +365,8 @@ fn from_deny_reuses_the_allowlist() {
         &dir.join("app/deny.toml"),
         "[licenses]\nallow = [\"MIT\", \"Apache-2.0\"]\nexceptions = [{ allow = [\"MPL-2.0\"], crate = \"dep\" }]\n",
     );
-    let deny = dir.join("app/deny.toml");
-    let deny = deny.to_str().unwrap();
+    // relative: anchored to the workspace root (app/), like tribute.toml.
+    let deny = "deny.toml";
 
     let out = tribute(&manifest_path, &["--from-deny", deny]);
     assert!(out.status.success(), "--from-deny failed: {}", String::from_utf8_lossy(&out.stderr));
@@ -365,6 +378,55 @@ fn from_deny_reuses_the_allowlist() {
     let out = tribute(&manifest_path, &["--from-deny", deny]);
     assert!(!out.status.success(), "conflicting sources must fail");
     assert!(String::from_utf8_lossy(&out.stderr).contains("keep one source"));
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn json_reports_bypass_the_policy_gate() {
+    // dep is GPL: the write path fails the policy, but json/cyclonedx still report
+    // the tree (failures become stderr warnings); text stays gated.
+    let dir = std::env::temp_dir().join(format!("tribute-gate-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    let manifest_path = write_app(&dir, "GPL-3.0-only");
+
+    assert_eq!(tribute(&manifest_path, &[]).status.code(), Some(1));
+
+    let out = tribute(&manifest_path, &["--json"]);
+    assert!(out.status.success(), "--json must report despite the policy: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not in the accepted set"));
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["crates"][0]["name"], "dep");
+    assert_eq!(report["crates"][0]["expression"], "GPL-3.0-only");
+    assert_eq!(report["crates"][0]["licenses"], serde_json::json!([]), "no resolved licenses");
+
+    // also exercises the --format=F spelling.
+    let out = tribute(&manifest_path, &["--format=cyclonedx"]);
+    assert!(out.status.success());
+    let bom: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(bom["components"][0]["name"], "dep");
+    assert!(bom["components"][0]["licenses"].is_null(), "no licenses field for a policy-failed crate");
+    assert_eq!(bom["components"][0]["properties"][0]["value"], "GPL-3.0-only");
+
+    assert_eq!(tribute(&manifest_path, &["--format", "text"]).status.code(), Some(1), "text stays gated");
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn zero_deps_leaves_no_licenses_dir() {
+    // a tree with nothing to attribute writes the manifest but no empty folders.
+    let dir = std::env::temp_dir().join(format!("tribute-zero-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    write(&dir.join("app/Cargo.toml"), "[package]\nname = \"app\"\nversion = \"0.0.0\"\nedition = \"2021\"\n");
+    write(&dir.join("app/src/main.rs"), "fn main() {}\n");
+    let manifest_path = dir.join("app/Cargo.toml");
+
+    assert!(tribute(&manifest_path, &[]).status.success());
+    assert!(dir.join("app/THIRD-PARTY.md").exists());
+    assert!(!dir.join("app/LICENSES").exists(), "no empty LICENSES dir");
+    assert!(!dir.join("app/NOTICES").exists(), "no empty NOTICES dir");
+    assert!(tribute(&manifest_path, &["--check"]).status.success());
 
     fs::remove_dir_all(&dir).ok();
 }

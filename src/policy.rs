@@ -11,7 +11,8 @@ pub fn canonical_text(id: &str) -> Option<&'static str> {
 }
 
 // the leaf's license name: the SPDX id, or the raw `LicenseRef-...` form for a
-// license outside the corpus.
+// license outside the corpus. an or-later `+` suffix is dropped: "GPL-2.0+" is
+// treated as its base license for both the policy and the attributed text.
 pub fn license_name(req: &spdx::LicenseReq) -> String {
     req.license.id().map_or_else(|| req.license.to_string(), |id| id.name.to_string())
 }
@@ -23,8 +24,8 @@ pub fn exceptions_for(expr: &spdx::Expression, chosen: &BTreeSet<String>) -> Vec
         .filter_map(|node| match node {
             ExprNode::Req(r) => {
                 let ex = r.req.addition.as_ref()?.id()?;
-                let lic = r.req.license.id()?.name;
-                chosen.contains(lic).then(|| ex.name.to_string())
+                // license_name, not id(): a WITH on a LicenseRef-* base counts too.
+                chosen.contains(&license_name(&r.req)).then(|| ex.name.to_string())
             }
             ExprNode::Op(_) => None,
         })
@@ -158,6 +159,13 @@ mod tests {
         assert_eq!(pick_with(acc, "GPL-2.0-only WITH GCC-exception-2.0"), None); // nor another exception
         // preference still works: MIT (earlier) beats the pairing in an OR.
         assert_eq!(pick_with(acc, "(GPL-2.0-only WITH Classpath-exception-2.0) OR MIT"), Some(vec!["MIT".into()]));
+    }
+
+    #[test]
+    fn exception_on_a_licenseref_base_is_collected() {
+        let expr = spdx::Expression::parse_mode("LicenseRef-x WITH LLVM-exception", spdx::ParseMode::LAX).unwrap();
+        let chosen: BTreeSet<String> = ["LicenseRef-x".to_string()].into_iter().collect();
+        assert_eq!(exceptions_for(&expr, &chosen), vec!["LLVM-exception"]);
     }
 
     #[test]
