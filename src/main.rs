@@ -15,7 +15,7 @@ use config::{Accept, Extra, apply_deny, clarify_expr, load_settings, parse_accep
 use harvest::{Extras, harvest_extras};
 use output::{
     Resolution, io, is_stale_license, is_stale_notice, render_cyclonedx, render_json, render_manifest, render_text,
-    stale_outputs,
+    stale_doc, stale_outputs,
 };
 use policy::{canonical_text, choose, exceptions_for, license_name};
 use spdx::expression::ExprNode;
@@ -66,6 +66,8 @@ CONFIG (tribute.toml in the project root, all optional):
     manifest = \"THIRD-PARTY.md\"              # attribution manifest path
     licenses-dir = \"LICENSES\"                # folder for the canonical license texts
     notices-dir = \"NOTICES\"                  # folder for NOTICE files shipped by dependencies
+    notices-file = \"THIRD-PARTY-NOTICES\"     # also write the flat all-in-one notices file
+                                             # (the --format text document), gated by --check
 
     [[clarify]]                              # override a crate's license (missing/wrong/non-SPDX)
     name = \"ring\"
@@ -79,7 +81,8 @@ CONFIG (tribute.toml in the project root, all optional):
     [[extra]]                                # attribute non-crate code (vendored C, ...)
     name = \"zlib (bundled in libz-sys)\"
     expression = \"Zlib\"
-    url = \"https://zlib.net\"                 # optional, like copyright = \"...\"
+    url = \"https://zlib.net\"                 # optional; copyright and notes (free text
+                                             # for the notices file) are optional too
 
     [[license-text]]                         # local text for a LicenseRef-* id
     id = \"LicenseRef-weird\"
@@ -296,6 +299,9 @@ const INIT_TEMPLATE: &str = "\
 # licenses-dir = \"LICENSES\"
 # notices-dir = \"NOTICES\"
 
+# also write (and --check) the flat all-in-one notices file:
+# notices-file = \"THIRD-PARTY-NOTICES\"
+
 # override a crate's license (missing/wrong/non-SPDX):
 # [[clarify]]
 # name = \"ring\"
@@ -307,11 +313,15 @@ const INIT_TEMPLATE: &str = "\
 # name = \"unicode-ident\"
 # allow = [\"Unicode-DFS-2016\"]
 
-# attribute non-crate code (vendored C, bundled assets):
+# attribute non-crate code (vendored C, bundled assets); `notes` is free text
+# reproduced in the notices file:
 # [[extra]]
 # name = \"zlib (bundled in libz-sys)\"
 # expression = \"Zlib\"
 # url = \"https://zlib.net\"
+# notes = \"\"\"
+# Vendored under third_party/zlib; local patches: none.
+# \"\"\"
 
 # local text for a LicenseRef-* id:
 # [[license-text]]
@@ -646,9 +656,16 @@ fn run(cli: Cli) -> Result<Output, Failure> {
         };
     }
     let manifest = render_manifest(&res, &set.licenses_link, &set.notices_link);
+    // the flat all-in-one notices document, only when configured.
+    let notices_doc = set.notices_file.as_ref().map(|_| render_text(&res, &texts));
 
     if cli.check {
-        let stale = stale_outputs(&set.licenses_dir, &texts, &set.notices_dir, &notices, &set.manifest, &manifest);
+        let mut stale = stale_outputs(&set.licenses_dir, &texts, &set.notices_dir, &notices, &set.manifest, &manifest);
+        if let (Some(p), Some(doc)) = (&set.notices_file, &notices_doc)
+            && let Some(entry) = stale_doc(p, doc)
+        {
+            stale.push(entry);
+        }
         if !stale.is_empty() {
             return Err(Failure::Stale(format!("out of date (run `cargo tribute`):\n  {}", stale.join("\n  "))));
         }
@@ -701,14 +718,21 @@ fn run(cli: Cli) -> Result<Output, Failure> {
             io(parent, fs::create_dir_all(parent))?;
         }
         io(&set.manifest, fs::write(&set.manifest, &manifest))?;
+        if let (Some(p), Some(doc)) = (&set.notices_file, &notices_doc) {
+            if let Some(parent) = p.parent() {
+                io(parent, fs::create_dir_all(parent))?;
+            }
+            io(p, fs::write(p, doc))?;
+        }
         let n = if notices.is_empty() {
             String::new()
         } else {
             format!(", {}/ ({} notices)", set.notices_link, notices.len())
         };
         let e = if extra_chosen.is_empty() { String::new() } else { format!(", {} extras", extra_chosen.len()) };
+        let f = set.notices_file_link.as_ref().map(|l| format!(" and {l}")).unwrap_or_default();
         Ok(Output::Summary(format!(
-            "wrote {}/ ({} license texts){n} and {} ({} crates{e})",
+            "wrote {}/ ({} license texts){n} and {} ({} crates{e}){f}",
             set.licenses_link,
             texts.len(),
             set.manifest_link,

@@ -250,16 +250,20 @@ fn format_text_and_cyclonedx_report_without_writing() {
     write(&dir.join("app/src/main.rs"), "fn main() {}\n");
     let manifest_path = dir.join("app/Cargo.toml");
 
-    // --format text: one flat document with the entry, the license text, and the NOTICE.
+    // --format text: a per-package entry in part I, the license text once in part II.
     let out = tribute(&manifest_path, &["--format", "text"]);
     assert!(out.status.success(), "text failed: {}", String::from_utf8_lossy(&out.stderr));
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("Third-party licenses"), "text:\n{text}");
-    assert!(text.contains("- dep 1.0.0"), "text:\n{text}");
-    assert!(text.contains("Copyright (c) 2024 Dep Author"), "text:\n{text}");
+    assert!(text.contains("THIRD-PARTY NOTICES"), "text:\n{text}");
+    assert!(text.contains("PART I -- PER-PACKAGE ENTRIES"), "text:\n{text}");
+    assert!(text.contains("\ndep 1.0.0\n"), "text:\n{text}");
+    assert!(text.contains("Source:  https://crates.io/crates/dep"), "text:\n{text}");
+    assert!(text.contains("License: MIT"), "text:\n{text}");
+    assert!(text.contains("  Copyright (c) 2024 Dep Author"), "text:\n{text}");
+    assert!(text.contains("License text: see Part II -- MIT"), "text:\n{text}");
+    assert!(text.contains("NOTICE (reproduced as shipped):\n  dep notice body"), "text:\n{text}");
+    assert!(text.contains("PART II -- LICENSE TEXTS"), "text:\n{text}");
     assert!(text.contains("Permission is hereby granted"), "MIT body must be included:\n{text}");
-    assert!(text.contains("NOTICE for dep 1.0.0"), "text:\n{text}");
-    assert!(text.contains("dep notice body"), "text:\n{text}");
 
     // --format cyclonedx: valid JSON carrying the license text and copyright.
     let out = tribute(&manifest_path, &["--format", "cyclonedx"]);
@@ -370,6 +374,52 @@ fn from_deny_reuses_the_allowlist() {
     let out = tribute(&manifest_path, &["--from-deny", deny]);
     assert!(!out.status.success(), "conflicting sources must fail");
     assert!(String::from_utf8_lossy(&out.stderr).contains("keep one source"));
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn notices_file_is_written_and_checked() {
+    // notices-file makes the flat document a committed artifact: written by the
+    // normal run, gated by --check, alongside the usual folders.
+    let dir = std::env::temp_dir().join(format!("tribute-nfile-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    write(
+        &dir.join("dep/Cargo.toml"),
+        "[package]\nname = \"dep\"\nversion = \"1.0.0\"\nedition = \"2021\"\nlicense = \"MIT OR Apache-2.0\"\n",
+    );
+    write(&dir.join("dep/src/lib.rs"), "");
+    write(&dir.join("dep/NOTICE"), "dep notice body\n");
+    write(
+        &dir.join("app/Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\ndep = { path = \"../dep\" }\n",
+    );
+    write(&dir.join("app/src/main.rs"), "fn main() {}\n");
+    write(
+        &dir.join("app/tribute.toml"),
+        "notices-file = \"THIRD-PARTY-NOTICES\"\naccepted = [\"MIT\", \"Apache-2.0\", \"Zlib\"]\n\n\
+         [[extra]]\nname = \"zlib (bundled)\"\nexpression = \"Zlib\"\nurl = \"https://zlib.net\"\n\
+         notes = \"\"\"\nVendored under third_party/zlib.\nLocal patches: none.\n\"\"\"\n",
+    );
+    let manifest_path = dir.join("app/Cargo.toml");
+
+    let out = tribute(&manifest_path, &[]);
+    assert!(out.status.success(), "write failed: {}", String::from_utf8_lossy(&out.stderr));
+    let doc = fs::read_to_string(dir.join("app/THIRD-PARTY-NOTICES")).unwrap();
+    // the OR pick is spelled out beside the upstream expression.
+    assert!(doc.contains("License: MIT  (upstream declares: MIT OR Apache-2.0)"), "doc:\n{doc}");
+    assert!(doc.contains("NOTICE (reproduced as shipped):\n  dep notice body"), "doc:\n{doc}");
+    // the [[extra]] entry lands in part I (continued) with its free-text notes.
+    assert!(doc.contains("PART I (continued) -- NON-CRATE CODE"), "doc:\n{doc}");
+    assert!(doc.contains("zlib (bundled)"), "doc:\n{doc}");
+    assert!(doc.contains("Additional requirements / notices:\n  Vendored under third_party/zlib."), "doc:\n{doc}");
+    // the usual outputs still exist beside it.
+    assert!(dir.join("app/THIRD-PARTY.md").exists());
+
+    // --check gates the file like the manifest.
+    assert!(tribute(&manifest_path, &["--check"]).status.success(), "check should pass after write");
+    fs::write(dir.join("app/THIRD-PARTY-NOTICES"), "stale\n").unwrap();
+    assert_eq!(tribute(&manifest_path, &["--check"]).status.code(), Some(2), "check should fail on a stale file");
 
     fs::remove_dir_all(&dir).ok();
 }

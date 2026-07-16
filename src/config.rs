@@ -28,6 +28,8 @@ struct Config {
     licenses_dir: Option<String>,
     #[serde(rename = "notices-dir")]
     notices_dir: Option<String>,
+    #[serde(rename = "notices-file")]
+    notices_file: Option<String>,
     clarify: Option<Vec<Clarify>>,
     exception: Option<Vec<Exception>>,
     extra: Option<Vec<Extra>>,
@@ -57,6 +59,8 @@ pub struct Exception {
 
 // attribute third-party code the crate graph can't see (C sources vendored in a
 // -sys crate, a bundled font, ...); the expression flows through the same policy.
+// `notes` is free text reproduced in the notices file (provenance, vendored
+// paths, 4(b) change notices).
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Extra {
@@ -64,6 +68,7 @@ pub struct Extra {
     pub expression: String,
     pub url: Option<String>,
     pub copyright: Option<String>,
+    pub notes: Option<String>,
 }
 
 // a local text file for a license id outside the SPDX corpus (LicenseRef-<id>),
@@ -122,6 +127,9 @@ pub struct Settings {
     pub licenses_link: String, // relative name, for markdown links + messages
     pub notices_dir: PathBuf,  // absolute output dir for NOTICE files
     pub notices_link: String,  // relative name, for markdown links + messages
+    // the flat all-in-one notices document, written and --checked only when set.
+    pub notices_file: Option<PathBuf>,
+    pub notices_file_link: Option<String>,
 }
 
 // anchor tribute.toml and outputs to the workspace root, not the cwd, so
@@ -143,6 +151,9 @@ pub fn load_settings(root: &Utf8Path) -> Result<Settings, String> {
     relative_inside("manifest", &manifest_link)?;
     relative_inside("licenses-dir", &licenses_link)?;
     relative_inside("notices-dir", &notices_link)?;
+    if let Some(f) = &cfg.notices_file {
+        relative_inside("notices-file", f)?;
+    }
     // license-text files are only read, but keep them inside the project anyway so
     // the output cannot depend on files outside the tree.
     for t in cfg.license_text.as_deref().unwrap_or_default() {
@@ -169,6 +180,8 @@ pub fn load_settings(root: &Utf8Path) -> Result<Settings, String> {
         manifest: root.join(&manifest_link).into(),
         licenses_dir: root.join(&licenses_link).into(),
         notices_dir: root.join(&notices_link).into(),
+        notices_file: cfg.notices_file.as_ref().map(|f| root.join(f).into()),
+        notices_file_link: cfg.notices_file,
         manifest_link,
         licenses_link,
         notices_link,
