@@ -162,6 +162,11 @@ pub fn load_settings(root: &Utf8Path) -> Result<Settings, String> {
     relative_inside("licenses-dir", &licenses_link)?;
     relative_inside("notices-dir", &notices_link)?;
     relative_inside("flat-file", &flat_link)?;
+    // the same path for both documents would self-overwrite under layout = "both"
+    // and leave --check permanently stale.
+    if flat_link == manifest_link {
+        return Err(format!("tribute.toml: manifest and flat-file point at the same path ('{flat_link}')"));
+    }
     let layout = match cfg.layout.as_deref() {
         None | Some("folders") => Layout::Folders,
         Some("flat") => Layout::Flat,
@@ -208,10 +213,12 @@ pub fn load_settings(root: &Utf8Path) -> Result<Settings, String> {
 // reject a config output path that is absolute, escapes the project via `..`, or names
 // no real target (empty or "."). the last would resolve to the project root itself, so
 // orphan-cleanup (which deletes bundled-id `.txt`s) would then scan the whole tree.
+// has_root, not is_absolute: on windows a rooted "\evil" or drive-relative "C:evil"
+// is not "absolute", but join() still leaves the project with it.
 fn relative_inside(field: &str, link: &str) -> Result<(), String> {
     use std::path::Component;
     let p = Path::new(link);
-    let escapes = p.is_absolute() || p.components().any(|c| c == Component::ParentDir);
+    let escapes = p.has_root() || p.components().any(|c| matches!(c, Component::ParentDir | Component::Prefix(_)));
     let has_target = p.components().any(|c| matches!(c, Component::Normal(_)));
     if escapes || !has_target {
         return Err(format!("tribute.toml: {field} must be a relative path inside the project (got '{link}')"));
@@ -323,7 +330,15 @@ mod tests {
         assert!(relative_inside("manifest", "").is_err()); // no target -> project root
         assert!(relative_inside("licenses-dir", ".").is_err()); // "." -> project root
         assert!(relative_inside("manifest", "../escape.md").is_err());
-        assert!(relative_inside("manifest", "/etc/passwd").is_err());
+        assert!(relative_inside("manifest", "/etc/passwd").is_err()); // rooted on every platform
+        // windows-only shapes: rooted without a drive, and drive prefixes; join()
+        // leaves the project with any of them.
+        #[cfg(windows)]
+        {
+            assert!(relative_inside("manifest", r"\evil.md").is_err());
+            assert!(relative_inside("manifest", r"C:\evil.md").is_err());
+            assert!(relative_inside("manifest", r"C:evil.md").is_err());
+        }
     }
 
     #[test]
@@ -340,6 +355,11 @@ mod tests {
         // a missing config still falls back to defaults.
         fs::remove_file(dir.join("tribute.toml")).unwrap();
         assert!(load_settings(&root).is_ok());
+
+        // manifest and flat-file on the same path would self-overwrite under "both".
+        fs::write(dir.join("tribute.toml"), "manifest = \"NOTICES.txt\"\nflat-file = \"NOTICES.txt\"\n").unwrap();
+        let err = load_settings(&root).err().expect("same-path config must be rejected");
+        assert!(err.contains("same path"), "err: {err}");
 
         fs::remove_dir_all(&dir).ok();
     }

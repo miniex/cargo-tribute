@@ -16,6 +16,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - `--format text` now emits the flat THIRD-PARTY-NOTICES shape big Rust products ship: part I is a self-contained entry per package (source URL, the chosen license beside the full upstream expression, copyright holders, the crate's NOTICE reproduced in place), part I (continued) covers `[[extra]]` entries, and part II holds every referenced license text once. Replaces the previous grouped-by-license layout.
 - Command-line mistakes (unknown flags, a bad `--format` value) exit 3 like other errors instead of 1, which read as a policy failure to CI.
 
+### Fixed
+
+- On Windows, a rooted (`\evil`) or drive-prefixed (`C:evil`) output path in tribute.toml is rejected like an absolute one; `join()` would have left the project with it, so writes and orphan cleanup could touch foreign paths.
+- `manifest` and `flat-file` pointing at the same path is a config error; under `layout = "both"` the two documents overwrote each other and `--check` never passed.
+
 ## [0.8.0] - 2026-07-07
 
 ### Changed
