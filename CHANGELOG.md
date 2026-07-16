@@ -10,6 +10,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - `[[extra]]` entries take an optional free-text `notes` field, reproduced in the notices document under "Additional requirements / notices" -- provenance, vendored paths, Apache 4(b) change notices.
 - The command line is parsed by clap (lean feature set, no color stack): grouped `--help`, typo suggestions for misspelled flags, consistent `--flag=value` handling. Parse errors are remapped to exit 3, and a license-policy failure now ends with a one-line hint naming `accepted`, `[[exception]]`, and `[[clarify]]`.
 - CI runs the tests and the dogfood `--check` on Windows too.
+- Pushing a release tag also publishes the crate to crates.io from CI (trusted publishing, no token secret), after checking the tag against the crate version.
 
 ### Changed
 

@@ -1,6 +1,7 @@
 name: release
 
-# build a binary per target and attach it to the release for the pushed tag
+# build a binary per target and attach it to the release for the pushed tag,
+# and publish the crate to crates.io
 on:
   push:
     tags:
@@ -10,6 +11,26 @@ permissions:
   contents: write
 
 jobs:
+  # trusted publishing (OIDC): no long-lived token secret. one-time setup on
+  # crates.io: cargo-tribute -> Settings -> Trusted Publishing -> add this repo
+  # with workflow file release.yml.
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup update stable && rustup default stable
+      # a tag on the wrong commit would publish whatever version Cargo.toml holds
+      - name: tag must match the crate version
+        run: test "${GITHUB_REF_NAME#v}" = "$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
   binaries:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
