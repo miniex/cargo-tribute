@@ -379,10 +379,10 @@ fn from_deny_reuses_the_allowlist() {
 }
 
 #[test]
-fn notices_file_is_written_and_checked() {
-    // notices-file makes the flat document a committed artifact: written by the
-    // normal run, gated by --check, alongside the usual folders.
-    let dir = std::env::temp_dir().join(format!("tribute-nfile-{}", std::process::id()));
+fn layout_flat_writes_only_the_notices_document() {
+    // layout = "flat" makes the flat document the whole committed output; "both"
+    // adds the usual folders back. --check gates whatever the layout writes.
+    let dir = std::env::temp_dir().join(format!("tribute-layout-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     write(
         &dir.join("dep/Cargo.toml"),
@@ -397,29 +397,42 @@ fn notices_file_is_written_and_checked() {
     write(&dir.join("app/src/main.rs"), "fn main() {}\n");
     write(
         &dir.join("app/tribute.toml"),
-        "notices-file = \"THIRD-PARTY-NOTICES\"\naccepted = [\"MIT\", \"Apache-2.0\", \"Zlib\"]\n\n\
+        "layout = \"flat\"\naccepted = [\"MIT\", \"Apache-2.0\", \"Zlib\"]\n\n\
          [[extra]]\nname = \"zlib (bundled)\"\nexpression = \"Zlib\"\nurl = \"https://zlib.net\"\n\
          notes = \"\"\"\nVendored under third_party/zlib.\nLocal patches: none.\n\"\"\"\n",
     );
     let manifest_path = dir.join("app/Cargo.toml");
 
     let out = tribute(&manifest_path, &[]);
-    assert!(out.status.success(), "write failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(out.status.success(), "flat write failed: {}", String::from_utf8_lossy(&out.stderr));
     let doc = fs::read_to_string(dir.join("app/THIRD-PARTY-NOTICES")).unwrap();
     // the OR pick is spelled out beside the upstream expression.
     assert!(doc.contains("License: MIT  (upstream declares: MIT OR Apache-2.0)"), "doc:\n{doc}");
     assert!(doc.contains("NOTICE (reproduced as shipped):\n  dep notice body"), "doc:\n{doc}");
     // the [[extra]] entry lands in part I (continued) with its free-text notes.
     assert!(doc.contains("PART I (continued) -- NON-CRATE CODE"), "doc:\n{doc}");
-    assert!(doc.contains("zlib (bundled)"), "doc:\n{doc}");
     assert!(doc.contains("Additional requirements / notices:\n  Vendored under third_party/zlib."), "doc:\n{doc}");
-    // the usual outputs still exist beside it.
-    assert!(dir.join("app/THIRD-PARTY.md").exists());
+    // flat means flat: no folders, no markdown manifest.
+    assert!(!dir.join("app/THIRD-PARTY.md").exists(), "flat layout must not write the manifest");
+    assert!(!dir.join("app/LICENSES").exists(), "flat layout must not write LICENSES/");
+    assert!(!dir.join("app/NOTICES").exists(), "flat layout must not write NOTICES/");
 
-    // --check gates the file like the manifest.
+    // --check gates the file like the manifest, and only the file.
     assert!(tribute(&manifest_path, &["--check"]).status.success(), "check should pass after write");
     fs::write(dir.join("app/THIRD-PARTY-NOTICES"), "stale\n").unwrap();
     assert_eq!(tribute(&manifest_path, &["--check"]).status.code(), Some(2), "check should fail on a stale file");
+
+    // "both" brings the folders back next to the document.
+    let cfg = fs::read_to_string(dir.join("app/tribute.toml")).unwrap();
+    fs::write(dir.join("app/tribute.toml"), cfg.replace("\"flat\"", "\"both\"")).unwrap();
+    assert!(tribute(&manifest_path, &[]).status.success());
+    assert!(dir.join("app/THIRD-PARTY.md").exists());
+    assert!(dir.join("app/LICENSES/MIT.txt").exists());
+    assert!(tribute(&manifest_path, &["--check"]).status.success());
+
+    // an unknown layout value is a config error.
+    write(&dir.join("app/tribute.toml"), "layout = \"sideways\"\n");
+    assert_eq!(tribute(&manifest_path, &[]).status.code(), Some(3));
 
     fs::remove_dir_all(&dir).ok();
 }
@@ -489,9 +502,14 @@ fn exit_codes_distinguish_failure_kinds() {
     );
     assert_eq!(tribute(&manifest_path, &["--check"]).status.code(), Some(2));
 
-    // 3: anything else (unreadable config).
+    // 3: anything else (unreadable config, cli mistakes).
     write(&dir.join("app/tribute.toml"), "accepted = 3\n");
     assert_eq!(tribute(&manifest_path, &[]).status.code(), Some(3));
+    let out = tribute(&manifest_path, &["check"]);
+    assert_eq!(out.status.code(), Some(3), "a cli parse error must not read as a policy failure");
+    let out = tribute(&manifest_path, &["--chek"]);
+    assert_eq!(out.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--check"), "a typo should suggest the flag");
 
     fs::remove_dir_all(&dir).ok();
 }

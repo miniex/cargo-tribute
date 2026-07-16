@@ -6,12 +6,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ### Added
 
-- `notices-file` in tribute.toml writes the `--format text` document as a committed artifact (e.g. `THIRD-PARTY-NOTICES`) alongside the usual outputs, gated by `--check` like the manifest.
+- `layout` in tribute.toml picks what a run writes and `--check` gates: `folders` (the default: `LICENSES/` + `NOTICES/` + `THIRD-PARTY.md`), `flat` (one all-in-one `THIRD-PARTY-NOTICES` file, path via `flat-file`), or `both`.
 - `[[extra]]` entries take an optional free-text `notes` field, reproduced in the notices document under "Additional requirements / notices" -- provenance, vendored paths, Apache 4(b) change notices.
+- The command line is parsed by clap (lean feature set, no color stack): grouped `--help`, typo suggestions for misspelled flags, consistent `--flag=value` handling. Parse errors are remapped to exit 3, and a license-policy failure now ends with a one-line hint naming `accepted`, `[[exception]]`, and `[[clarify]]`.
+- CI runs the tests and the dogfood `--check` on Windows too.
 
 ### Changed
 
 - `--format text` now emits the flat THIRD-PARTY-NOTICES shape big Rust products ship: part I is a self-contained entry per package (source URL, the chosen license beside the full upstream expression, copyright holders, the crate's NOTICE reproduced in place), part I (continued) covers `[[extra]]` entries, and part II holds every referenced license text once. Replaces the previous grouped-by-license layout.
+- Command-line mistakes (unknown flags, a bad `--format` value) exit 3 like other errors instead of 1, which read as a policy failure to CI.
 
 ## [0.8.0] - 2026-07-07
 

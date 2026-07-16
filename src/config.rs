@@ -28,8 +28,9 @@ struct Config {
     licenses_dir: Option<String>,
     #[serde(rename = "notices-dir")]
     notices_dir: Option<String>,
-    #[serde(rename = "notices-file")]
-    notices_file: Option<String>,
+    layout: Option<String>,
+    #[serde(rename = "flat-file")]
+    flat_file: Option<String>,
     clarify: Option<Vec<Clarify>>,
     exception: Option<Vec<Exception>>,
     extra: Option<Vec<Extra>>,
@@ -127,9 +128,17 @@ pub struct Settings {
     pub licenses_link: String, // relative name, for markdown links + messages
     pub notices_dir: PathBuf,  // absolute output dir for NOTICE files
     pub notices_link: String,  // relative name, for markdown links + messages
-    // the flat all-in-one notices document, written and --checked only when set.
-    pub notices_file: Option<PathBuf>,
-    pub notices_file_link: Option<String>,
+    pub layout: Layout,
+    pub flat_file: PathBuf, // absolute path of the flat document (layout flat/both)
+    pub flat_link: String,  // relative name, for messages
+}
+
+// which artifacts a run writes and --check gates.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Layout {
+    Folders, // LICENSES/ + NOTICES/ + THIRD-PARTY.md (the default)
+    Flat,    // one flat all-in-one THIRD-PARTY-NOTICES file
+    Both,
 }
 
 // anchor tribute.toml and outputs to the workspace root, not the cwd, so
@@ -148,12 +157,19 @@ pub fn load_settings(root: &Utf8Path) -> Result<Settings, String> {
     let notices_link = cfg.notices_dir.unwrap_or_else(|| "NOTICES".into());
     // keep outputs inside the project: an absolute or `..` path would let the write and the
     // orphan-cleanup (which deletes `.txt`) touch files outside the tree.
+    let flat_link = cfg.flat_file.unwrap_or_else(|| "THIRD-PARTY-NOTICES".into());
     relative_inside("manifest", &manifest_link)?;
     relative_inside("licenses-dir", &licenses_link)?;
     relative_inside("notices-dir", &notices_link)?;
-    if let Some(f) = &cfg.notices_file {
-        relative_inside("notices-file", f)?;
-    }
+    relative_inside("flat-file", &flat_link)?;
+    let layout = match cfg.layout.as_deref() {
+        None | Some("folders") => Layout::Folders,
+        Some("flat") => Layout::Flat,
+        Some("both") => Layout::Both,
+        Some(other) => {
+            return Err(format!("tribute.toml: layout must be \"folders\", \"flat\", or \"both\" (got '{other}')"));
+        }
+    };
     // license-text files are only read, but keep them inside the project anyway so
     // the output cannot depend on files outside the tree.
     for t in cfg.license_text.as_deref().unwrap_or_default() {
@@ -180,11 +196,12 @@ pub fn load_settings(root: &Utf8Path) -> Result<Settings, String> {
         manifest: root.join(&manifest_link).into(),
         licenses_dir: root.join(&licenses_link).into(),
         notices_dir: root.join(&notices_link).into(),
-        notices_file: cfg.notices_file.as_ref().map(|f| root.join(f).into()),
-        notices_file_link: cfg.notices_file,
+        flat_file: root.join(&flat_link).into(),
+        layout,
         manifest_link,
         licenses_link,
         notices_link,
+        flat_link,
     })
 }
 

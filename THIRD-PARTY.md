@@ -12,11 +12,17 @@ Text: [`LICENSES/Apache-2.0.txt`](LICENSES/Apache-2.0.txt)
 
 Text: [`LICENSES/MIT.txt`](LICENSES/MIT.txt)
 
+- [anstyle 1.0.14](https://github.com/rust-cli/anstyle.git) -- `MIT OR Apache-2.0` -- Copyright (c) Individual contributors
 - [camino 1.2.4](https://github.com/camino-rs/camino) -- `MIT OR Apache-2.0` -- by Without Boats, Ashley Williams, Steve Klabnik, Rain
 - [cargo-platform 0.3.3](https://github.com/rust-lang/cargo) -- `MIT OR Apache-2.0`
 - [cargo_metadata 0.23.1](https://github.com/oli-obk/cargo_metadata) -- by Oliver Schneider
+- [clap 4.6.2](https://github.com/clap-rs/clap) -- `MIT OR Apache-2.0` -- Copyright (c) Individual contributors
+- [clap_builder 4.6.2](https://github.com/clap-rs/clap) -- `MIT OR Apache-2.0` -- Copyright (c) Individual contributors
+- [clap_derive 4.6.1](https://github.com/clap-rs/clap) -- `MIT OR Apache-2.0` -- Copyright (c) Individual contributors
+- [clap_lex 1.1.0](https://github.com/clap-rs/clap) -- `MIT OR Apache-2.0` -- Copyright (c) Individual contributors
 - [equivalent 1.0.2](https://github.com/indexmap-rs/equivalent) -- `Apache-2.0 OR MIT` -- Copyright (c) 2016--2023
 - [hashbrown 0.17.1](https://github.com/rust-lang/hashbrown) -- `MIT OR Apache-2.0` -- Copyright (c) 2016 Amanieu d'Antras
+- [heck 0.5.0](https://github.com/withoutboats/heck) -- `MIT OR Apache-2.0` -- Copyright (c) 2015 The Rust Project Developers
 - [indexmap 2.14.0](https://github.com/indexmap-rs/indexmap) -- `Apache-2.0 OR MIT` -- Copyright (c) 2016--2017
 - [itoa 1.0.18](https://github.com/dtolnay/itoa) -- `MIT OR Apache-2.0` -- by David Tolnay
 - [memchr 2.8.2](https://github.com/BurntSushi/memchr) -- `Unlicense OR MIT` -- Copyright (c) 2015 Andrew Gallant
@@ -29,13 +35,14 @@ Text: [`LICENSES/MIT.txt`](LICENSES/MIT.txt)
 - [serde_json 1.0.150](https://github.com/serde-rs/json) -- `MIT OR Apache-2.0` -- by Erick Tryzelaar, David Tolnay
 - [serde_spanned 1.1.1](https://github.com/toml-rs/toml) -- `MIT OR Apache-2.0` -- Copyright (c) Individual contributors
 - [smallvec 1.15.2](https://github.com/servo/rust-smallvec) -- `MIT OR Apache-2.0` -- Copyright (c) 2018 The Servo Project Developers
+- [strsim 0.11.1](https://github.com/rapidfuzz/strsim-rs) -- Copyright (c) 2015 Danny Guo; Copyright (c) 2016 Titus Wormer <tituswormer@gmail.com>; Copyright (c) 2018 Akash Kurdekar
 - [syn 2.0.118](https://github.com/dtolnay/syn) -- `MIT OR Apache-2.0` -- by David Tolnay
 - [thiserror 2.0.18](https://github.com/dtolnay/thiserror) -- `MIT OR Apache-2.0` -- by David Tolnay
 - [thiserror-impl 2.0.18](https://github.com/dtolnay/thiserror) -- `MIT OR Apache-2.0` -- by David Tolnay
-- [toml 1.1.2+spec-1.1.0](https://github.com/toml-rs/toml) -- `MIT OR Apache-2.0` -- Copyright (c) Individual contributors
+- [toml 1.1.3+spec-1.1.0](https://github.com/toml-rs/toml) -- `MIT OR Apache-2.0` -- Copyright (c) Individual contributors
 - [toml_datetime 1.1.1+spec-1.1.0](https://github.com/toml-rs/toml) -- `MIT OR Apache-2.0` -- Copyright (c) Individual contributors
 - [toml_parser 1.1.2+spec-1.1.0](https://github.com/toml-rs/toml) -- `MIT OR Apache-2.0` -- Copyright (c) Individual contributors
-- [toml_writer 1.1.1+spec-1.1.0](https://github.com/toml-rs/toml) -- `MIT OR Apache-2.0` -- Copyright (c) Individual contributors
+- [toml_writer 1.1.2+spec-1.1.0](https://github.com/toml-rs/toml) -- `MIT OR Apache-2.0` -- Copyright (c) Individual contributors
 - [unicode-ident 1.0.24](https://github.com/dtolnay/unicode-ident) -- `(MIT OR Apache-2.0) AND Unicode-3.0` -- Copyright © 1991-2023 Unicode, Inc.
 - [winnow 1.0.3](https://github.com/winnow-rs/winnow)
 - [zmij 1.0.21](https://github.com/dtolnay/zmij) -- by David Tolnay

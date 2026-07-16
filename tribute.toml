@@ -1,2 +1,2 @@
-# dogfood: ship the flat all-in-one notices document for this repo too.
-notices-file = "THIRD-PARTY-NOTICES"
+# dogfood: ship the folders and the flat all-in-one notices document.
+layout = "both"

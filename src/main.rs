@@ -11,7 +11,9 @@ mod output;
 mod policy;
 
 use cargo_metadata::{DependencyKind, MetadataCommand, Package, PackageId, TargetKind};
-use config::{Accept, Extra, apply_deny, clarify_expr, load_settings, parse_accept, policy_matches, warn_unknown_ids};
+use config::{
+    Accept, Extra, Layout, apply_deny, clarify_expr, load_settings, parse_accept, policy_matches, warn_unknown_ids,
+};
 use harvest::{Extras, harvest_extras};
 use output::{
     Resolution, io, is_stale_license, is_stale_notice, render_cyclonedx, render_json, render_manifest, render_text,
@@ -24,35 +26,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const HELP: &str = "\
-cargo-tribute -- REUSE-style third-party license attribution from a Cargo tree
-
-USAGE:
-    cargo tribute [OPTIONS]
-    cargo tribute init       scaffold a commented tribute.toml at the workspace root
-
-OPTIONS:
-        --check              verify the output is current; do not write (exit 2 if stale)
-        --audit              compare declared licenses against the license files the
-                             crates actually ship (advisory report; never fails)
-    -p, --package <NAME>     attribute only this workspace member's dependencies
-                             (repeatable; report-only, use with --json/--format/--audit)
-        --from-deny <PATH>   take the accepted list and per-crate exceptions from a
-                             cargo-deny deny.toml [licenses] section
-        --manifest-path <P>  path to Cargo.toml (default: auto-detect from the cwd)
-        --locked             forwarded to `cargo metadata` (also --offline, --frozen)
-        --features <F>       forwarded to `cargo metadata`, to attribute feature-gated
-                             deps (also --all-features, --no-default-features,
-                             --filter-platform <T>)
-        --json               shorthand for --format json
-        --format <F>         print the resolved attribution as F instead of writing
-                             files: json, text (flat list + full texts, for an
-                             \"open source licenses\" screen), or cyclonedx
-                             (CycloneDX 1.6 SBOM carrying the license texts)
-    -q, --quiet              suppress the success summary
-    -h, --help               print this help
-    -V, --version            print version
-
+const AFTER_HELP: &str = "\
 EXIT CODES:
     1 license policy failed, 2 output out of date (--check), 3 anything else
 
@@ -66,8 +40,11 @@ CONFIG (tribute.toml in the project root, all optional):
     manifest = \"THIRD-PARTY.md\"              # attribution manifest path
     licenses-dir = \"LICENSES\"                # folder for the canonical license texts
     notices-dir = \"NOTICES\"                  # folder for NOTICE files shipped by dependencies
-    notices-file = \"THIRD-PARTY-NOTICES\"     # also write the flat all-in-one notices file
-                                             # (the --format text document), gated by --check
+    layout = \"folders\"                       # what a run writes and --check gates:
+                                             # folders (default) = the three outputs above;
+                                             # flat = one all-in-one THIRD-PARTY-NOTICES
+                                             # file (the --format text document); both
+    flat-file = \"THIRD-PARTY-NOTICES\"        # the flat file's path (layout flat/both)
 
     [[clarify]]                              # override a crate's license (missing/wrong/non-SPDX)
     name = \"ring\"
@@ -90,19 +67,15 @@ CONFIG (tribute.toml in the project root, all optional):
 ";
 
 // a stdout report mode: print the resolved attribution instead of writing files.
+#[derive(Clone, Copy, clap::ValueEnum)]
 enum Format {
+    /// the resolved attribution as JSON
     Json,
+    /// one flat THIRD-PARTY-NOTICES document (per-package entries + license texts)
     Text,
+    /// a CycloneDX 1.6 SBOM carrying the license texts
+    #[value(name = "cyclonedx")]
     CycloneDx,
-}
-
-fn parse_format(v: &str) -> Option<Format> {
-    match v {
-        "json" => Some(Format::Json),
-        "text" => Some(Format::Text),
-        "cyclonedx" => Some(Format::CycloneDx),
-        _ => None,
-    }
 }
 
 // what run() produced: a report always goes to stdout, a summary only without -q.
@@ -130,118 +103,121 @@ impl From<&str> for Failure {
     }
 }
 
-// the parsed command line.
+#[derive(clap::Parser)]
+#[command(
+    name = "cargo-tribute",
+    bin_name = "cargo tribute",
+    version,
+    about = "REUSE-style third-party license attribution from a Cargo tree",
+    after_help = AFTER_HELP
+)]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Cmd>,
+
+    /// verify the output is current; do not write (exit 2 if stale)
+    #[arg(long)]
     check: bool,
-    quiet: bool,
-    init: bool,
+
+    /// compare declared licenses against the license files the crates actually ship
+    /// (advisory report; never fails)
+    #[arg(long)]
     audit: bool,
-    format: Option<Format>,
+
+    /// attribute only this workspace member's dependencies (repeatable; report-only,
+    /// use with --json/--format/--audit)
+    #[arg(short, long = "package", value_name = "NAME")]
     packages: Vec<String>,
+
+    /// take the accepted list and per-crate exceptions from a cargo-deny deny.toml
+    /// [licenses] section
+    #[arg(long, value_name = "PATH")]
     from_deny: Option<String>,
+
+    /// path to Cargo.toml (default: auto-detect from the cwd)
+    #[arg(long, value_name = "PATH", global = true)]
     manifest_path: Option<String>,
-    cargo_flags: Vec<String>,
+
+    /// forwarded to `cargo metadata`, so CI resolves deterministically and offline
+    #[arg(long, global = true)]
+    locked: bool,
+    /// forwarded to `cargo metadata`
+    #[arg(long, global = true)]
+    offline: bool,
+    /// forwarded to `cargo metadata`
+    #[arg(long, global = true)]
+    frozen: bool,
+
+    /// forwarded to `cargo metadata`, to attribute feature-gated deps (repeatable)
+    #[arg(long, value_name = "FEATURES")]
+    features: Vec<String>,
+    /// forwarded to `cargo metadata`
+    #[arg(long)]
+    all_features: bool,
+    /// forwarded to `cargo metadata`
+    #[arg(long)]
+    no_default_features: bool,
+    /// forwarded to `cargo metadata`, for platform-specific deps (repeatable)
+    #[arg(long, value_name = "TRIPLE")]
+    filter_platform: Vec<String>,
+
+    /// print the resolved attribution as FORMAT instead of writing files
+    #[arg(long, value_name = "FORMAT")]
+    format: Option<Format>,
+    /// shorthand for --format json
+    #[arg(long)]
+    json: bool,
+
+    /// suppress the success summary
+    #[arg(short, long, global = true)]
+    quiet: bool,
+}
+
+#[derive(clap::Subcommand)]
+enum Cmd {
+    /// scaffold a commented tribute.toml at the workspace root
+    Init,
+}
+
+// the flags forwarded verbatim to `cargo metadata`, reassembled from the parse.
+fn cargo_flags(cli: &Cli) -> Vec<String> {
+    let mut flags: Vec<String> = Vec::new();
+    let bools = [
+        ("--locked", cli.locked),
+        ("--offline", cli.offline),
+        ("--frozen", cli.frozen),
+        ("--all-features", cli.all_features),
+        ("--no-default-features", cli.no_default_features),
+    ];
+    for (flag, on) in bools {
+        if on {
+            flags.push(flag.into());
+        }
+    }
+    for f in &cli.features {
+        flags.extend(["--features".into(), f.clone()]);
+    }
+    for t in &cli.filter_platform {
+        flags.extend(["--filter-platform".into(), t.clone()]);
+    }
+    flags
 }
 
 fn main() -> ExitCode {
-    let mut cli = Cli {
-        check: false,
-        quiet: false,
-        init: false,
-        audit: false,
-        format: None,
-        packages: Vec::new(),
-        from_deny: None,
-        manifest_path: None,
-        // flags forwarded verbatim to `cargo metadata`, e.g. --locked/--offline/--frozen
-        // so a CI --check resolves deterministically and offline.
-        cargo_flags: Vec::new(),
-    };
-    let mut args = std::env::args().skip(1).peekable();
-    if args.peek().map(String::as_str) == Some("tribute") {
-        args.next(); // cargo passes the subcommand name when invoked as `cargo tribute`
+    use clap::Parser;
+    let mut argv: Vec<String> = std::env::args().collect();
+    if argv.get(1).map(String::as_str) == Some("tribute") {
+        argv.remove(1); // cargo passes the subcommand name when invoked as `cargo tribute`
     }
-    while let Some(a) = args.next() {
-        match a.as_str() {
-            "init" => cli.init = true,
-            "--check" => cli.check = true,
-            "--audit" => cli.audit = true,
-            "-q" | "--quiet" => cli.quiet = true,
-            "--json" => cli.format = Some(Format::Json),
-            "--format" => match args.next().as_deref().map(str::to_owned) {
-                Some(v) => match parse_format(&v) {
-                    Some(f) => cli.format = Some(f),
-                    None => {
-                        eprintln!("cargo-tribute: unknown format '{v}' (expected json, text, or cyclonedx)");
-                        return ExitCode::FAILURE;
-                    }
-                },
-                None => {
-                    eprintln!("cargo-tribute: --format needs a value");
-                    return ExitCode::FAILURE;
-                }
-            },
-            "-p" | "--package" => match args.next() {
-                Some(p) => cli.packages.push(p),
-                None => {
-                    eprintln!("cargo-tribute: {a} needs a value");
-                    return ExitCode::FAILURE;
-                }
-            },
-            "--from-deny" => match args.next() {
-                Some(p) => cli.from_deny = Some(p),
-                None => {
-                    eprintln!("cargo-tribute: --from-deny needs a value");
-                    return ExitCode::FAILURE;
-                }
-            },
-            "--manifest-path" => match args.next() {
-                Some(p) => cli.manifest_path = Some(p),
-                None => {
-                    eprintln!("cargo-tribute: --manifest-path needs a value");
-                    return ExitCode::FAILURE;
-                }
-            },
-            "--locked" | "--offline" | "--frozen" | "--all-features" | "--no-default-features" => {
-                cli.cargo_flags.push(a)
-            }
-            // value-taking passthroughs; forward the flag and its value verbatim.
-            "--features" | "--filter-platform" => match args.next() {
-                Some(v) => cli.cargo_flags.extend([a, v]),
-                None => {
-                    eprintln!("cargo-tribute: {a} needs a value");
-                    return ExitCode::FAILURE;
-                }
-            },
-            "-h" | "--help" => {
-                print!("{HELP}");
-                return ExitCode::SUCCESS;
-            }
-            "-V" | "--version" => {
-                println!("cargo-tribute {}", env!("CARGO_PKG_VERSION"));
-                return ExitCode::SUCCESS;
-            }
-            // accept the `--flag=value` spellings cargo also takes.
-            _ if a.starts_with("--features=") || a.starts_with("--filter-platform=") => cli.cargo_flags.push(a),
-            _ if a.starts_with("--format=") => match parse_format(&a["--format=".len()..]) {
-                Some(f) => cli.format = Some(f),
-                None => {
-                    eprintln!(
-                        "cargo-tribute: unknown format '{}' (expected json, text, or cyclonedx)",
-                        &a["--format=".len()..]
-                    );
-                    return ExitCode::FAILURE;
-                }
-            },
-            _ if a.starts_with("--manifest-path=") => cli.manifest_path = Some(a["--manifest-path=".len()..].into()),
-            _ if a.starts_with("--package=") => cli.packages.push(a["--package=".len()..].into()),
-            _ if a.starts_with("--from-deny=") => cli.from_deny = Some(a["--from-deny=".len()..].into()),
-            other => {
-                eprintln!("cargo-tribute: unknown argument '{other}' (try --help)");
-                return ExitCode::FAILURE;
-            }
+    let cli = match Cli::try_parse_from(argv) {
+        Ok(cli) => cli,
+        Err(e) => {
+            // clap's own exit code for a parse error is 2, which reads as "stale" in
+            // our contract; keep cli mistakes at 3. --help/--version print and exit 0.
+            let _ = e.print();
+            return ExitCode::from(if e.use_stderr() { 3 } else { 0 });
         }
-    }
+    };
     let quiet = cli.quiet;
     match run(cli) {
         Ok(Output::Report(s)) => {
@@ -273,8 +249,9 @@ fn run_init(cli: &Cli) -> Result<Output, Failure> {
         cmd.manifest_path(PathBuf::from(p));
     }
     // forward --locked/--offline/--frozen, so init works where the tree resolves.
-    if !cli.cargo_flags.is_empty() {
-        cmd.other_options(cli.cargo_flags.clone());
+    let flags = cargo_flags(cli);
+    if !flags.is_empty() {
+        cmd.other_options(flags);
     }
     let meta = cmd.exec().map_err(|e| e.to_string())?;
     let path = meta.workspace_root.join("tribute.toml");
@@ -299,8 +276,10 @@ const INIT_TEMPLATE: &str = "\
 # licenses-dir = \"LICENSES\"
 # notices-dir = \"NOTICES\"
 
-# also write (and --check) the flat all-in-one notices file:
-# notices-file = \"THIRD-PARTY-NOTICES\"
+# what a run writes and --check gates: folders (default) for the three outputs
+# above, flat for one all-in-one THIRD-PARTY-NOTICES file, or both:
+# layout = \"folders\"
+# flat-file = \"THIRD-PARTY-NOTICES\"
 
 # override a crate's license (missing/wrong/non-SPDX):
 # [[clarify]]
@@ -330,21 +309,24 @@ const INIT_TEMPLATE: &str = "\
 ";
 
 fn run(cli: Cli) -> Result<Output, Failure> {
-    if cli.init {
+    if matches!(cli.command, Some(Cmd::Init)) {
         return run_init(&cli);
     }
+    // --json folds into --format here; everything below sees one field.
+    let format = cli.format.or(cli.json.then_some(Format::Json));
     // -p is a scoped, partial view: allow it only with a stdout report. writing or
     // --check would clobber (or perpetually fail against) the shared, whole-workspace
     // LICENSES/NOTICES/manifest.
-    if !cli.packages.is_empty() && cli.format.is_none() && !cli.audit {
+    if !cli.packages.is_empty() && format.is_none() && !cli.audit {
         return Err("-p is a scoped view; use it with --json/--format/--audit, or drop -p for the full run".into());
     }
     let mut cmd = MetadataCommand::new();
     if let Some(p) = &cli.manifest_path {
         cmd.manifest_path(PathBuf::from(p));
     }
-    if !cli.cargo_flags.is_empty() {
-        cmd.other_options(cli.cargo_flags.clone());
+    let flags = cargo_flags(&cli);
+    if !flags.is_empty() {
+        cmd.other_options(flags);
     }
     let meta = cmd.exec().map_err(|e| e.to_string())?;
     let mut set = load_settings(&meta.workspace_root)?;
@@ -570,7 +552,7 @@ fn run(cli: Cli) -> Result<Output, Failure> {
     }
 
     if !failures.is_empty() {
-        match cli.format {
+        match format {
             // json/cyclonedx describe the tree as it is (an SBOM of an unaccepted
             // tree is still an SBOM); the failures downgrade to warnings. text and
             // the write path are attribution deliverables and stay gated.
@@ -579,7 +561,13 @@ fn run(cli: Cli) -> Result<Output, Failure> {
                     eprintln!("cargo-tribute: warning: {f}");
                 }
             }
-            _ => return Err(Failure::Policy(format!("license policy failed:\n  {}", failures.join("\n  ")))),
+            _ => {
+                return Err(Failure::Policy(format!(
+                    "license policy failed:\n  {}\n  (fix in tribute.toml: `accepted` allows a license everywhere, \
+                     [[exception]] for one crate, [[clarify]] when the declared expression is wrong)",
+                    failures.join("\n  ")
+                )));
+            }
         }
     }
 
@@ -648,21 +636,26 @@ fn run(cli: Cli) -> Result<Output, Failure> {
     };
     // --format/--json is a read-only report of what the tree resolves to; it never
     // writes or checks.
-    if let Some(f) = cli.format {
+    if let Some(f) = format {
         return match f {
             Format::Json => Ok(Output::Report(render_json(&res)?)),
             Format::Text => Ok(Output::Report(render_text(&res, &texts))),
             Format::CycloneDx => Ok(Output::Report(render_cyclonedx(&res, &texts)?)),
         };
     }
-    let manifest = render_manifest(&res, &set.licenses_link, &set.notices_link);
-    // the flat all-in-one notices document, only when configured.
-    let notices_doc = set.notices_file.as_ref().map(|_| render_text(&res, &texts));
+    // which artifacts this run writes and checks, per the layout preset.
+    let folders = matches!(set.layout, Layout::Folders | Layout::Both);
+    let flat = matches!(set.layout, Layout::Flat | Layout::Both);
+    let manifest = folders.then(|| render_manifest(&res, &set.licenses_link, &set.notices_link));
+    let flat_doc = flat.then(|| render_text(&res, &texts));
 
     if cli.check {
-        let mut stale = stale_outputs(&set.licenses_dir, &texts, &set.notices_dir, &notices, &set.manifest, &manifest);
-        if let (Some(p), Some(doc)) = (&set.notices_file, &notices_doc)
-            && let Some(entry) = stale_doc(p, doc)
+        let mut stale = Vec::new();
+        if let Some(m) = &manifest {
+            stale = stale_outputs(&set.licenses_dir, &texts, &set.notices_dir, &notices, &set.manifest, m);
+        }
+        if let Some(doc) = &flat_doc
+            && let Some(entry) = stale_doc(&set.flat_file, doc)
         {
             stale.push(entry);
         }
@@ -672,7 +665,7 @@ fn run(cli: Cli) -> Result<Output, Failure> {
         let n = if notices.is_empty() { String::new() } else { format!(", {} notices", notices.len()) };
         let e = if extra_chosen.is_empty() { String::new() } else { format!(", {} extras", extra_chosen.len()) };
         Ok(Output::Summary(format!("up to date: {} license texts{n}, {} crates{e}", texts.len(), deps.len())))
-    } else {
+    } else if let Some(manifest) = &manifest {
         // the write path covers the whole workspace (a scoped -p run is report-only),
         // so orphan cleanup over the shared folders is always safe here.
         // drop license/exception texts cargo-tribute wrote that are no longer used; leave other files
@@ -717,12 +710,12 @@ fn run(cli: Cli) -> Result<Output, Failure> {
         if let Some(parent) = set.manifest.parent() {
             io(parent, fs::create_dir_all(parent))?;
         }
-        io(&set.manifest, fs::write(&set.manifest, &manifest))?;
-        if let (Some(p), Some(doc)) = (&set.notices_file, &notices_doc) {
-            if let Some(parent) = p.parent() {
+        io(&set.manifest, fs::write(&set.manifest, manifest))?;
+        if let Some(doc) = &flat_doc {
+            if let Some(parent) = set.flat_file.parent() {
                 io(parent, fs::create_dir_all(parent))?;
             }
-            io(p, fs::write(p, doc))?;
+            io(&set.flat_file, fs::write(&set.flat_file, doc))?;
         }
         let n = if notices.is_empty() {
             String::new()
@@ -730,7 +723,7 @@ fn run(cli: Cli) -> Result<Output, Failure> {
             format!(", {}/ ({} notices)", set.notices_link, notices.len())
         };
         let e = if extra_chosen.is_empty() { String::new() } else { format!(", {} extras", extra_chosen.len()) };
-        let f = set.notices_file_link.as_ref().map(|l| format!(" and {l}")).unwrap_or_default();
+        let f = if flat { format!(" and {}", set.flat_link) } else { String::new() };
         Ok(Output::Summary(format!(
             "wrote {}/ ({} license texts){n} and {} ({} crates{e}){f}",
             set.licenses_link,
@@ -738,5 +731,51 @@ fn run(cli: Cli) -> Result<Output, Failure> {
             set.manifest_link,
             deps.len()
         )))
+    } else {
+        // layout = "flat": the one document is the whole output.
+        let doc = flat_doc.as_deref().unwrap_or_default();
+        if let Some(parent) = set.flat_file.parent() {
+            io(parent, fs::create_dir_all(parent))?;
+        }
+        io(&set.flat_file, fs::write(&set.flat_file, doc))?;
+        let e = if extra_chosen.is_empty() { String::new() } else { format!(", {} extras", extra_chosen.len()) };
+        Ok(Output::Summary(format!("wrote {} ({} crates{e})", set.flat_link, deps.len())))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn help_and_init_template_cover_every_config_key() {
+        // --help and the init template are hand-kept copies of the config surface;
+        // add new tribute.toml keys to this list and both texts, or this fails.
+        const KEYS: &[&str] = &[
+            "accepted",
+            "include-dev",
+            "include-build",
+            "skip-private",
+            "skip-proc-macros",
+            "layout",
+            "flat-file",
+            "manifest",
+            "licenses-dir",
+            "notices-dir",
+            "[[clarify]]",
+            "[[exception]]",
+            "[[extra]]",
+            "[[license-text]]",
+        ];
+        for k in KEYS {
+            assert!(AFTER_HELP.contains(k), "--help lost the config key {k}");
+            assert!(INIT_TEMPLATE.contains(k), "the init template lost the config key {k}");
+        }
+    }
+
+    #[test]
+    fn clap_definition_is_consistent() {
+        use clap::CommandFactory;
+        Cli::command().debug_assert();
     }
 }

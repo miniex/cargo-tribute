@@ -10,7 +10,7 @@ Generate a REUSE-style `LICENSES/` folder and a per-crate attribution manifest f
 - `LICENSES/<id>.txt` -- one canonical license text per license actually used
 - `NOTICES/<crate>-<version>.txt` -- NOTICE files shipped by dependencies (the ones Apache-2.0 section 4(d) asks redistributors to pass along), only when a dependency actually ships one
 - `THIRD-PARTY.md` -- dependencies grouped by license with each crate's copyright holders, linking to the texts
-- `THIRD-PARTY-NOTICES` -- optionally (`notices-file` in tribute.toml), one flat all-in-one notices document with per-package entries and every license text inline
+- `THIRD-PARTY-NOTICES` -- with `layout = "flat"` (that file alone) or `"both"`, one flat all-in-one notices document with per-package entries and every license text inline
 
 It is a policy gate (fails if a dependency's license is not accepted) and, with `--check`, a staleness gate (fails if the committed output no longer matches the dependency tree) -- both suitable for CI.
 
@@ -31,33 +31,17 @@ cargo binstall cargo-tribute
 ## Usage
 
 ```
-cargo tribute                     # write LICENSES/, NOTICES/ and THIRD-PARTY.md
-cargo tribute init                # scaffold a commented tribute.toml
-cargo tribute --check             # verify they are current and every license is accepted
-cargo tribute --audit             # compare declared licenses against the license files the
-                                  # crates actually ship (advisory report, never fails)
-cargo tribute -p NAME --json      # attribute only this member's deps (repeatable; report-only,
-                                  # pair with --json/--format/--audit)
-cargo tribute --from-deny deny.toml  # reuse cargo-deny's [licenses] allow list + exceptions
-                                  # (a relative path is anchored to the workspace root)
-cargo tribute --manifest-path P   # run against a specific Cargo.toml (writes at its workspace root)
-cargo tribute --locked --check    # forward --locked/--offline/--frozen to cargo metadata (for CI)
-cargo tribute --all-features      # forward --features/--all-features/--filter-platform too, to
-                                  # attribute optional (feature-gated) or platform-specific deps
-cargo tribute --json              # print the resolved attribution as JSON (no files written)
-cargo tribute --format text       # one flat THIRD-PARTY-NOTICES document: per-package
-                                  # entries, then every license text once (see below)
-cargo tribute --format cyclonedx  # CycloneDX 1.6 SBOM carrying the license texts and
-                                  # per-component copyright (no files written)
-cargo tribute --quiet             # suppress the success summary
-cargo tribute --help
+cargo tribute            # write the attribution (LICENSES/, NOTICES/, THIRD-PARTY.md)
+cargo tribute init       # scaffold a commented tribute.toml
+cargo tribute --check    # CI gate: outputs current, every license accepted
+cargo tribute --help     # the rest: --audit, -p, --from-deny, --json/--format, -q, ...
 ```
 
 Exit codes distinguish the failure: 1 license policy failed, 2 output out of date (`--check`), 3 anything else.
 
 ## Use in CI
 
-Fail the build when a dependency's license is not accepted, or when the committed outputs (`LICENSES/`, `NOTICES/`, `THIRD-PARTY.md`, and `notices-file` if set) drift from the dependency tree:
+Fail the build when a dependency's license is not accepted, or when the committed outputs (whatever the `layout` writes) drift from the dependency tree:
 
 ```yaml
 # .github/workflows/licenses.yml
@@ -104,8 +88,10 @@ skip-proc-macros = false      # skip proc-macro crates and their compile-time su
 manifest = "THIRD-PARTY.md"   # attribution manifest path
 licenses-dir = "LICENSES"     # folder for the canonical license texts
 notices-dir = "NOTICES"       # folder for NOTICE files shipped by dependencies
-notices-file = "THIRD-PARTY-NOTICES"  # also write the flat all-in-one notices file
-                              # (the --format text document), gated by --check
+layout = "folders"            # what a run writes and --check gates: folders (default,
+                              # the three outputs above), flat (one all-in-one
+                              # THIRD-PARTY-NOTICES file), or both
+flat-file = "THIRD-PARTY-NOTICES"  # the flat file's path (layout flat/both)
 
 # override a crate's license -- for crates that declare `license-file` instead of
 # `license`, or whose `license` field is wrong or non-SPDX. Repeatable.
@@ -148,7 +134,7 @@ Code the crate graph can't see -- C sources vendored in a `-sys` crate, a bundle
 
 ## Other output formats
 
-`--format json|text|cyclonedx` prints the resolved attribution to stdout instead of writing files. `text` is one flat, self-contained THIRD-PARTY-NOTICES document in the shape big Rust products ship: part I is one entry per package (source URL, the chosen license beside the full upstream expression, copyright holders, and the crate's NOTICE reproduced in place), part II holds every referenced license text once. `[[extra]]` entries land in a "part I (continued)" section, with their free-text `notes` under "Additional requirements / notices". To commit the document and have `--check` gate it like the manifest, set `notices-file = "THIRD-PARTY-NOTICES"` in tribute.toml -- the normal run then writes it alongside the usual outputs. `cyclonedx` is a CycloneDX 1.6 SBOM whose components carry the full license texts and a per-component copyright, the fields id-only SBOM generators leave empty; `serialNumber` and `timestamp` are deliberately omitted so the output stays deterministic (same tree, same bytes). `json` and `cyclonedx` report the tree even when the license policy fails (the failures become stderr warnings and the crate appears without resolved licenses); `text` is an attribution deliverable and stays gated, like the write path.
+`--format json|text|cyclonedx` prints the resolved attribution to stdout instead of writing files. `text` is one flat, self-contained THIRD-PARTY-NOTICES document in the shape big Rust products ship: part I is one entry per package (source URL, the chosen license beside the full upstream expression, copyright holders, and the crate's NOTICE reproduced in place), part II holds every referenced license text once. `[[extra]]` entries land in a "part I (continued)" section, with their free-text `notes` under "Additional requirements / notices". To commit the document and have `--check` gate it like the manifest, set `layout = "flat"` in tribute.toml (the document becomes the only output) or `layout = "both"` (written alongside the folders). `cyclonedx` is a CycloneDX 1.6 SBOM whose components carry the full license texts and a per-component copyright, the fields id-only SBOM generators leave empty; `serialNumber` and `timestamp` are deliberately omitted so the output stays deterministic (same tree, same bytes). `json` and `cyclonedx` report the tree even when the license policy fails (the failures become stderr warnings and the crate appears without resolved licenses); `text` is an attribution deliverable and stays gated, like the write path.
 
 ## Auditing declared licenses
 

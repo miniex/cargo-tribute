@@ -21,3 +21,13 @@ jobs:
       - run: cargo test --all-features
       # dogfood with the default (lean) features: the committed output stays current
       - run: cargo run -- --check
+
+  # release binaries ship for windows; test there too (also exercises the CRLF
+  # tolerance, since the runner's git checks out with autocrlf).
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup update stable && rustup default stable
+      - run: cargo test --all-features
+      - run: cargo run -- --check

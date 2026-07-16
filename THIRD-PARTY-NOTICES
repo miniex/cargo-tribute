@@ -7,6 +7,17 @@ PART I -- PER-PACKAGE ENTRIES
 ================================================================================
 
 --------------------------------------------------------------------------------
+anstyle 1.0.14
+--------------------------------------------------------------------------------
+Source:  https://github.com/rust-cli/anstyle.git
+License: MIT  (upstream declares: MIT OR Apache-2.0)
+
+Copyright notice:
+  Copyright (c) Individual contributors
+
+License text: see Part II -- MIT
+
+--------------------------------------------------------------------------------
 camino 1.2.4
 --------------------------------------------------------------------------------
 Source:  https://github.com/camino-rs/camino
@@ -40,6 +51,50 @@ Copyright notice:
 License text: see Part II -- MIT
 
 --------------------------------------------------------------------------------
+clap 4.6.2
+--------------------------------------------------------------------------------
+Source:  https://github.com/clap-rs/clap
+License: MIT  (upstream declares: MIT OR Apache-2.0)
+
+Copyright notice:
+  Copyright (c) Individual contributors
+
+License text: see Part II -- MIT
+
+--------------------------------------------------------------------------------
+clap_builder 4.6.2
+--------------------------------------------------------------------------------
+Source:  https://github.com/clap-rs/clap
+License: MIT  (upstream declares: MIT OR Apache-2.0)
+
+Copyright notice:
+  Copyright (c) Individual contributors
+
+License text: see Part II -- MIT
+
+--------------------------------------------------------------------------------
+clap_derive 4.6.1
+--------------------------------------------------------------------------------
+Source:  https://github.com/clap-rs/clap
+License: MIT  (upstream declares: MIT OR Apache-2.0)
+
+Copyright notice:
+  Copyright (c) Individual contributors
+
+License text: see Part II -- MIT
+
+--------------------------------------------------------------------------------
+clap_lex 1.1.0
+--------------------------------------------------------------------------------
+Source:  https://github.com/clap-rs/clap
+License: MIT  (upstream declares: MIT OR Apache-2.0)
+
+Copyright notice:
+  Copyright (c) Individual contributors
+
+License text: see Part II -- MIT
+
+--------------------------------------------------------------------------------
 equivalent 1.0.2
 --------------------------------------------------------------------------------
 Source:  https://github.com/indexmap-rs/equivalent
@@ -58,6 +113,17 @@ License: MIT  (upstream declares: MIT OR Apache-2.0)
 
 Copyright notice:
   Copyright (c) 2016 Amanieu d'Antras
+
+License text: see Part II -- MIT
+
+--------------------------------------------------------------------------------
+heck 0.5.0
+--------------------------------------------------------------------------------
+Source:  https://github.com/withoutboats/heck
+License: MIT  (upstream declares: MIT OR Apache-2.0)
+
+Copyright notice:
+  Copyright (c) 2015 The Rust Project Developers
 
 License text: see Part II -- MIT
 
@@ -211,6 +277,19 @@ Copyright notice:
 License text: see Part II -- Apache-2.0
 
 --------------------------------------------------------------------------------
+strsim 0.11.1
+--------------------------------------------------------------------------------
+Source:  https://github.com/rapidfuzz/strsim-rs
+License: MIT
+
+Copyright notice:
+  Copyright (c) 2015 Danny Guo
+  Copyright (c) 2016 Titus Wormer <tituswormer@gmail.com>
+  Copyright (c) 2018 Akash Kurdekar
+
+License text: see Part II -- MIT
+
+--------------------------------------------------------------------------------
 syn 2.0.118
 --------------------------------------------------------------------------------
 Source:  https://github.com/dtolnay/syn
@@ -244,7 +323,7 @@ Copyright notice:
 License text: see Part II -- MIT
 
 --------------------------------------------------------------------------------
-toml 1.1.2+spec-1.1.0
+toml 1.1.3+spec-1.1.0
 --------------------------------------------------------------------------------
 Source:  https://github.com/toml-rs/toml
 License: MIT  (upstream declares: MIT OR Apache-2.0)
@@ -277,7 +356,7 @@ Copyright notice:
 License text: see Part II -- MIT
 
 --------------------------------------------------------------------------------
-toml_writer 1.1.1+spec-1.1.0
+toml_writer 1.1.2+spec-1.1.0
 --------------------------------------------------------------------------------
 Source:  https://github.com/toml-rs/toml
 License: MIT  (upstream declares: MIT OR Apache-2.0)
